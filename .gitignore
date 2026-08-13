@@ -1,0 +1,7 @@
+.ipynb_checkpoints/
+__pycache__/
+Microsoft VS Code/
+Git/
+anaconda_projects/
+*.ipynb
+*.pyc
