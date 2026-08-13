@@ -294,6 +294,55 @@ def calculate_metrics(
     return metrics
 
 
+def generate_buy_sell_signals(
+    df: pd.DataFrame
+) -> pd.DataFrame:
+    """
+    Generate BUY/SELL signals based on moving average crossovers.
+    BUY: MA20 crosses above MA50 (Golden Cross)
+    SELL: MA20 crosses below MA50 (Death Cross)
+    """
+    df = df.copy()
+    df["signal"] = None
+
+    if not all(
+        col in df.columns
+        for col in ["ma_20", "ma_50"]
+    ):
+        return df
+
+    for i in range(1, len(df)):
+        prev_ma20 = df.iloc[i - 1][
+            "ma_20"
+        ]
+        prev_ma50 = df.iloc[i - 1][
+            "ma_50"
+        ]
+        curr_ma20 = df.iloc[i]["ma_20"]
+        curr_ma50 = df.iloc[i]["ma_50"]
+
+        if (
+            pd.notna(prev_ma20)
+            and pd.notna(prev_ma50)
+            and pd.notna(curr_ma20)
+            and pd.notna(curr_ma50)
+        ):
+            # Golden Cross: MA20 > MA50
+            if (
+                prev_ma20 <= prev_ma50
+                and curr_ma20 > curr_ma50
+            ):
+                df.at[i, "signal"] = "BUY"
+            # Death Cross: MA20 < MA50
+            elif (
+                prev_ma20 >= prev_ma50
+                and curr_ma20 < curr_ma50
+            ):
+                df.at[i, "signal"] = "SELL"
+
+    return df
+
+
 def price_n_days_ago(
     df: pd.DataFrame,
     as_of_date,
@@ -437,7 +486,8 @@ def create_candlestick_chart(
     df: pd.DataFrame
 ) -> go.Figure:
     """
-    Create candlestick chart with MA20 and MA50 overlays.
+    Create candlestick chart with MA20, MA50, and BUY/SELL signals.
+    Volume chart displayed below.
     """
     if (
         df.empty
@@ -454,6 +504,11 @@ def create_candlestick_chart(
         return None
 
     df_chart = df.copy()
+
+    # Generate buy/sell signals
+    df_chart = generate_buy_sell_signals(
+        df_chart
+    )
 
     fig = make_subplots(
         rows=2,
@@ -515,6 +570,60 @@ def create_candlestick_chart(
                     color="red",
                     width=2,
                 ),
+            ),
+            row=1,
+            col=1,
+        )
+
+    # Add BUY signals (Golden Cross)
+    buy_signals = df_chart[
+        df_chart["signal"] == "BUY"
+    ]
+    if not buy_signals.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=buy_signals[
+                    "published_date"
+                ],
+                y=buy_signals["low"],
+                mode="markers",
+                marker=dict(
+                    size=12,
+                    color="green",
+                    symbol="triangle-up",
+                ),
+                name="BUY Signal",
+                text=buy_signals[
+                    "published_date"
+                ].dt.strftime("%Y-%m-%d"),
+                hovertemplate="<b>BUY</b><br>Date: %{text}<extra></extra>",
+            ),
+            row=1,
+            col=1,
+        )
+
+    # Add SELL signals (Death Cross)
+    sell_signals = df_chart[
+        df_chart["signal"] == "SELL"
+    ]
+    if not sell_signals.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=sell_signals[
+                    "published_date"
+                ],
+                y=sell_signals["high"],
+                mode="markers",
+                marker=dict(
+                    size=12,
+                    color="red",
+                    symbol="triangle-down",
+                ),
+                name="SELL Signal",
+                text=sell_signals[
+                    "published_date"
+                ].dt.strftime("%Y-%m-%d"),
+                hovertemplate="<b>SELL</b><br>Date: %{text}<extra></extra>",
             ),
             row=1,
             col=1,
