@@ -5,3 +5,4 @@ Git/
 anaconda_projects/
 *.ipynb
 *.pyc
+*.zip
