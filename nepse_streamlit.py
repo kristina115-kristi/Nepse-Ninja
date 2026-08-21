@@ -13,11 +13,10 @@ from plotly.subplots import make_subplots
 # ============================================================
 
 st.set_page_config(
-    page_title="NEPSE Historical Data Dashboard",
+    page_title="NEPSE Ninja",
     page_icon="📈",
     layout="wide",
 )
-
 
 # ============================================================
 # PATH SETTINGS
@@ -31,6 +30,11 @@ LATEST_DAY_FILE = "NEPSE_LATEST_DAY.csv"
 RECENT_FILE = "NEPSE_RECENT_30_DAYS.csv"
 COVERAGE_FILE = "NEPSE_SYMBOL_COVERAGE.csv"
 DAILY_SUMMARY_FILE = "NEPSE_DAILY_SUMMARY.csv"
+FINANCIAL_FILE = "nepsealpha_financials.csv"
+DIVIDEND_FILE = "dividends.csv"
+
+processed_dir = DEFAULT_PROCESSED_DIR
+all_data_path = processed_dir / ALL_DATA_FILE
 
 
 # ============================================================
@@ -232,6 +236,7 @@ def calculate_metrics(
 ) -> dict:
     """
     Calculate key performance metrics.
+    Ensures data is sorted by date to get the most recent close price.
     """
     if df.empty:
         return {
@@ -241,6 +246,12 @@ def calculate_metrics(
             "highest": None,
             "lowest": None,
         }
+
+    # Sort by date to ensure we get the latest close
+    if "published_date" in df.columns:
+        df = df.sort_values(
+            "published_date"
+        )
 
     metrics = {}
 
@@ -505,6 +516,12 @@ def create_candlestick_chart(
 
     df_chart = df.copy()
 
+    # Ensure data is sorted by date
+    if "published_date" in df_chart.columns:
+        df_chart = df_chart.sort_values(
+            "published_date"
+        )
+
     # Generate buy/sell signals
     df_chart = generate_buy_sell_signals(
         df_chart
@@ -757,62 +774,13 @@ def get_trend_insights(
 # ============================================================
 
 st.title(
-    "NEPSE Historical Data Dashboard"
-)
-
-st.caption(
-    "Interactive dashboard using the locally processed NEPSE historical dataset."
+    "NEPSE Ninja"
 )
 
 
-# ============================================================
-# SIDEBAR
-# ============================================================
 
-with st.sidebar:
-
-    st.header(
-        "Data Settings"
-    )
-
-    processed_dir_text = st.text_input(
-        "Processed data folder",
-        value=str(
-            DEFAULT_PROCESSED_DIR
-        ),
-        help=(
-            "Folder created by download_nepse_data.py"
-        ),
-    )
-
-    processed_dir = Path(
-        processed_dir_text
-    )
-
-    all_data_path = (
-        processed_dir
-        / ALL_DATA_FILE
-    )
-
-    if st.button(
-        "Reload Data",
-        use_container_width=True,
-    ):
-        st.cache_data.clear()
-        st.rerun()
-
-    st.divider()
-
-    st.write(
-        "Expected main file:"
-    )
-
-    st.code(
-        str(
-            all_data_path
-        )
-    )
-
+ 
+ 
 
 # ============================================================
 # CHECK MAIN FILE
@@ -905,6 +873,21 @@ daily_summary = load_csv(
     )
 )
 
+# ============================================================
+# LOAD FINANCIAL DATA
+# ============================================================
+
+financial_path = BASE_DIR / FINANCIAL_FILE
+dividend_path = BASE_DIR / DIVIDEND_FILE
+
+financial_data = load_csv(
+    str(financial_path)
+)
+
+dividend_data = load_csv(
+    str(dividend_path)
+)
+
 
 for optional_df in [
     latest_day,
@@ -923,79 +906,24 @@ for optional_df in [
         )
 
 
-# ============================================================
-# TOP SUMMARY
-# ============================================================
 
-summary = calculate_summary(
-    all_data
-)
-
-c1, c2, c3, c4 = st.columns(
-    4
-)
-
-c1.metric(
-    "Unique Symbols",
-    format_integer(
-        summary["symbols"]
-    ),
-)
-
-c2.metric(
-    "Observations",
-    format_integer(
-        summary["rows"]
-    ),
-)
-
-c3.metric(
-    "Earliest Date",
-    (
-        summary["earliest"].strftime(
-            "%Y-%m-%d"
-        )
-        if pd.notna(
-            summary["earliest"]
-        )
-        else "N/A"
-    ),
-)
-
-c4.metric(
-    "Latest Date",
-    (
-        summary["latest"].strftime(
-            "%Y-%m-%d"
-        )
-        if pd.notna(
-            summary["latest"]
-        )
-        else "N/A"
-    ),
-)
-
-
-# ============================================================
-# TABS
-# ============================================================
 
 (
     tab_core,
-    tab_overview,
+    
     tab_company,
+   
+
     tab_latest,
-    tab_market,
-    tab_coverage,
     tab_data,
 ) = st.tabs(
     [
         "Core Functionalities",
-        "Overview",
+        
         "Company Analysis",
         "Latest Trading Day",
-        "Market Activity",
-        "Symbol Coverage",
+
+       
         "Raw Data",
     ]
 )
@@ -1254,180 +1182,6 @@ with tab_core:
                 )
 
 
-# ============================================================
-# TAB 1: OVERVIEW
-# ============================================================
-
-with tab_overview:
-
-    st.subheader(
-        "Dataset Overview"
-    )
-
-    left, right = st.columns(
-        2
-    )
-
-    with left:
-
-        st.markdown(
-            "### Dataset Information"
-        )
-
-        st.write(
-            f"**Unique symbols:** {summary['symbols']:,}"
-        )
-
-        st.write(
-            f"**Total observations:** {summary['rows']:,}"
-        )
-
-        if pd.notna(
-            summary["earliest"]
-        ):
-            st.write(
-                "**Earliest observation:** "
-                + summary[
-                    "earliest"
-                ].strftime(
-                    "%Y-%m-%d"
-                )
-            )
-
-        if pd.notna(
-            summary["latest"]
-        ):
-            st.write(
-                "**Latest observation:** "
-                + summary[
-                    "latest"
-                ].strftime(
-                    "%Y-%m-%d"
-                )
-            )
-
-        st.write(
-            f"**Processed folder:** `{processed_dir}`"
-        )
-
-    with right:
-
-        st.markdown(
-            "### Missing Values"
-        )
-
-        important_columns = [
-            "open",
-            "high",
-            "low",
-            "close",
-            "per_change",
-            "traded_quantity",
-            "traded_amount",
-            "return_percent",
-        ]
-
-        missing_table = []
-
-        for column in important_columns:
-
-            if column in all_data.columns:
-
-                missing_count = (
-                    all_data[
-                        column
-                    ]
-                    .isna()
-                    .sum()
-                )
-
-                missing_pct = (
-                    missing_count
-                    / len(
-                        all_data
-                    )
-                    * 100
-                )
-
-                missing_table.append(
-                    {
-                        "Variable": column,
-                        "Missing Rows": missing_count,
-                        "Missing %": round(
-                            missing_pct,
-                            2,
-                        ),
-                    }
-                )
-
-        if missing_table:
-
-            st.dataframe(
-                pd.DataFrame(
-                    missing_table
-                ),
-                use_container_width=True,
-                hide_index=True,
-            )
-
-    st.markdown(
-        "### Observations by Year"
-    )
-
-    year_data = all_data.copy()
-
-    year_data["year"] = (
-        year_data[
-            "published_date"
-        ].dt.year
-    )
-
-    yearly = (
-        year_data.groupby(
-            "year",
-            as_index=False,
-        )
-        .agg(
-            observations=(
-                "published_date",
-                "size",
-            ),
-            symbols=(
-                "symbol",
-                "nunique",
-            ),
-        )
-        .dropna(
-            subset=[
-                "year"
-            ]
-        )
-    )
-
-    if not yearly.empty:
-
-        chart_df = (
-            yearly
-            .set_index(
-                "year"
-            )[
-                [
-                    "observations"
-                ]
-            ]
-        )
-
-        st.bar_chart(
-            chart_df
-        )
-
-        st.dataframe(
-            yearly.tail(
-                20
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
 
 
 # ============================================================
@@ -1627,6 +1381,139 @@ with tab_company:
                     2,
                 ),
             )
+            st.markdown(
+            "### Closing Price"
+        )
+
+                    # ====================================================
+        # FINANCIAL FUNDAMENTALS
+        # ====================================================
+
+        st.divider()
+
+        st.markdown(
+            "### 📊 Financial Fundamentals"
+        )
+
+        if not financial_data.empty:
+
+            company_financial = financial_data[
+                financial_data["symbol"].astype(str).str.upper()
+                == selected_symbol.upper()
+            ].copy()
+
+            if not company_financial.empty:
+
+                # --------------------------------------------
+                # Extract important financial ratios
+                # --------------------------------------------
+
+                def get_particular_value(particular):
+
+                    row = company_financial[
+                        company_financial["Particular"]
+                        .astype(str)
+                        .str.strip()
+                        .str.lower()
+                        == particular.lower()
+                    ]
+
+                    if row.empty:
+                        return "N/A"
+
+                    # Get most recent available period
+                    values = row.iloc[0].iloc[2:]
+
+                    values = values.dropna()
+
+                    if len(values) == 0:
+                        return "N/A"
+
+                    return values.iloc[-1]
+
+
+                pe_ratio = get_particular_value("PE Ratio")
+                pb_ratio = get_particular_value("PB Ratio")
+                ps_ratio = get_particular_value("PS Ratio")
+                roe = get_particular_value("ROE TTM")
+                roa = get_particular_value("ROA TTM")
+                net_margin = get_particular_value("Net Margin TTM")
+                eps = get_particular_value("EPS TTM YOY")
+                bvps = get_particular_value("BVPS YOY")
+
+                # --------------------------------------------
+                # Display ratios
+                # --------------------------------------------
+
+                f1, f2, f3, f4 = st.columns(4)
+
+                f1.metric(
+                    "P/E Ratio",
+                    str(pe_ratio)
+                )
+
+                f2.metric(
+                    "P/B Ratio",
+                    str(pb_ratio)
+                )
+
+                f3.metric(
+                    "P/S Ratio",
+                    str(ps_ratio)
+                )
+
+                f4.metric(
+                    "ROE",
+                    str(roe)
+                )
+
+                f5, f6, f7, f8 = st.columns(4)
+
+                f5.metric(
+                    "ROA",
+                    str(roa)
+                )
+
+                f6.metric(
+                    "Net Margin",
+                    str(net_margin)
+                )
+
+                f7.metric(
+                    "EPS",
+                    str(eps)
+                )
+
+                f8.metric(
+                    "BVPS",
+                    str(bvps)
+                )
+
+                # --------------------------------------------
+                # Full financial history
+                # --------------------------------------------
+
+                with st.expander(
+                    "View Financial History"
+                ):
+
+                    st.dataframe(
+                        company_financial,
+                        use_container_width=True,
+                        hide_index=True
+                    )
+
+            else:
+
+                st.info(
+                    f"No financial data available for {selected_symbol}."
+                )
+
+        else:
+
+            st.warning(
+                "Financial data file could not be loaded."
+            )
 
         st.markdown(
             "### Closing Price"
@@ -1759,348 +1646,52 @@ with tab_company:
 
 with tab_latest:
 
-    st.subheader(
-        "Latest Trading Day"
-    )
+    st.subheader("Latest Trading Day")
 
-    latest_date = (
-        all_data[
-            "published_date"
-        ].max()
-    )
+    latest_date = all_data["published_date"].max()
+    latest = all_data[all_data["published_date"] == latest_date].copy()
 
-    latest = (
-        all_data[
-            all_data[
-                "published_date"
-            ]
-            == latest_date
-        ]
-        .copy()
-    )
+    st.write("**Latest date:**", latest_date.strftime("%Y-%m-%d"))
 
-    st.write(
-        "**Latest date:**",
-        latest_date.strftime(
-            "%Y-%m-%d"
-        ),
-    )
+    l1, l2, l3 = st.columns(3)
 
-    l1, l2, l3 = st.columns(
-        3
-    )
+    l1.metric("Symbols", latest["symbol"].nunique())
 
-    l1.metric(
-        "Symbols",
-        latest[
-            "symbol"
-        ].nunique(),
-    )
+    if "traded_quantity" in latest.columns:
+        l2.metric("Total Quantity", format_integer(latest["traded_quantity"].sum()))
 
-    if (
-        "traded_quantity"
-        in latest.columns
-    ):
-
-        l2.metric(
-            "Total Quantity",
-            format_integer(
-                latest[
-                    "traded_quantity"
-                ].sum()
-            ),
-        )
-
-    if (
-        "traded_amount"
-        in latest.columns
-    ):
-
-        l3.metric(
-            "Total Turnover",
-            format_number(
-                latest[
-                    "traded_amount"
-                ].sum(),
-                2,
-            ),
-        )
+    if "traded_amount" in latest.columns:
+        l3.metric("Total Turnover", format_number(latest["traded_amount"].sum()))
 
     sort_option = st.selectbox(
         "Sort by",
-        options=[
-            "symbol",
-            "close",
-            "return_percent",
-            "traded_quantity",
-            "traded_amount",
-        ],
+        options=["symbol", "close", "return_percent", "traded_quantity", "traded_amount"],
         index=0,
         key="latest_sort",
     )
 
     ascending = st.checkbox(
         "Ascending order",
-        value=(
-            sort_option
-            == "symbol"
-        ),
+        value=(sort_option == "symbol"),
         key="latest_ascending",
     )
 
-    if (
-        sort_option
-        in latest.columns
-    ):
-
-        latest = latest.sort_values(
-            sort_option,
-            ascending=ascending,
-        )
+    if sort_option in latest.columns:
+        latest = latest.sort_values(sort_option, ascending=ascending)
 
     latest_columns = [
-        column
-        for column in [
-            "symbol",
-            "open",
-            "high",
-            "low",
-            "close",
-            "per_change",
-            "return_percent",
-            "traded_quantity",
-            "traded_amount",
-        ]
-        if column
-        in latest.columns
+        c for c in [
+            "symbol", "open", "high", "low", "close",
+            "per_change", "return_percent", "traded_quantity", "traded_amount"
+        ] if c in latest.columns
     ]
 
-    st.dataframe(
-        latest[
-            latest_columns
-        ],
-        use_container_width=True,
-        hide_index=True,
-    )
+    st.dataframe(latest[latest_columns], use_container_width=True, hide_index=True)
 
     st.download_button(
         "Download Latest Day",
-        data=csv_bytes(
-            latest
-        ),
+        data=csv_bytes(latest),
         file_name="NEPSE_LATEST_DAY.csv",
-        mime="text/csv",
-    )
-
-
-# ============================================================
-# TAB 4: MARKET ACTIVITY
-# ============================================================
-
-with tab_market:
-
-    st.subheader(
-        "Market Activity"
-    )
-
-    if daily_summary.empty:
-
-        market = (
-            all_data.groupby(
-                "published_date",
-                as_index=False,
-            )
-            .agg(
-                symbols=(
-                    "symbol",
-                    "nunique",
-                ),
-                total_traded_quantity=(
-                    "traded_quantity",
-                    "sum",
-                ),
-                total_traded_amount=(
-                    "traded_amount",
-                    "sum",
-                ),
-            )
-            .sort_values(
-                "published_date"
-            )
-        )
-
-    else:
-
-        market = (
-            daily_summary
-            .copy()
-        )
-
-        if (
-            "published_date"
-            in market.columns
-        ):
-            market[
-                "published_date"
-            ] = pd.to_datetime(
-                market[
-                    "published_date"
-                ],
-                errors="coerce",
-            )
-
-    if (
-        "published_date"
-        in market.columns
-    ):
-
-        if (
-            "total_traded_amount"
-            in market.columns
-        ):
-
-            st.markdown(
-                "### Total Traded Amount"
-            )
-
-            turnover_chart = (
-                market[
-                    [
-                        "published_date",
-                        "total_traded_amount",
-                    ]
-                ]
-                .dropna()
-                .set_index(
-                    "published_date"
-                )
-            )
-
-            st.line_chart(
-                turnover_chart
-            )
-
-        if (
-            "total_traded_quantity"
-            in market.columns
-        ):
-
-            st.markdown(
-                "### Total Traded Quantity"
-            )
-
-            quantity_chart = (
-                market[
-                    [
-                        "published_date",
-                        "total_traded_quantity",
-                    ]
-                ]
-                .dropna()
-                .set_index(
-                    "published_date"
-                )
-            )
-
-            st.line_chart(
-                quantity_chart
-            )
-
-        if (
-            "symbols"
-            in market.columns
-        ):
-
-            st.markdown(
-                "### Number of Traded Symbols"
-            )
-
-            symbols_chart = (
-                market[
-                    [
-                        "published_date",
-                        "symbols",
-                    ]
-                ]
-                .dropna()
-                .set_index(
-                    "published_date"
-                )
-            )
-
-            st.line_chart(
-                symbols_chart
-            )
-
-    st.dataframe(
-        market.tail(
-            1000
-        ).sort_values(
-            "published_date",
-            ascending=False,
-        ),
-        use_container_width=True,
-        hide_index=True,
-    )
-
-
-# ============================================================
-# TAB 5: SYMBOL COVERAGE
-# ============================================================
-
-with tab_coverage:
-
-    st.subheader(
-        "Symbol Data Coverage"
-    )
-
-    if coverage.empty:
-
-        coverage_display = (
-            all_data.groupby(
-                "symbol",
-                as_index=False,
-            )
-            .agg(
-                first_date=(
-                    "published_date",
-                    "min",
-                ),
-                last_date=(
-                    "published_date",
-                    "max",
-                ),
-                observations=(
-                    "published_date",
-                    "size",
-                ),
-            )
-            .sort_values(
-                [
-                    "first_date",
-                    "symbol",
-                ]
-            )
-        )
-
-    else:
-
-        coverage_display = (
-            coverage.copy()
-        )
-
-    st.dataframe(
-        coverage_display,
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    st.download_button(
-        "Download Coverage Table",
-        data=csv_bytes(
-            coverage_display
-        ),
-        file_name="NEPSE_SYMBOL_COVERAGE.csv",
         mime="text/csv",
     )
 
@@ -2199,3 +1790,4 @@ st.caption(
     "This dashboard reads locally processed data only. "
     "To refresh the underlying dataset, run download_nepse_data.py again."
 )
+
