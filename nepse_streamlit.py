@@ -6,6 +6,21 @@ import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import datetime as _dt
+import importlib
+import ninja_theme as _ninja_theme
+
+importlib.reload(_ninja_theme)
+
+from ninja_theme import (
+    get_ninja_css,
+    get_theme,
+    get_navbar_html,
+    get_hero_html,
+    get_market_status,
+    get_popular_tags_html,
+    get_sector_pills_html,
+)
 
 
 # ============================================================
@@ -13,9 +28,19 @@ from plotly.subplots import make_subplots
 # ============================================================
 
 st.set_page_config(
-    page_title="NEPSE Ninja",
-    page_icon="📈",
+    page_title="NEPSE Ninja – Nepal Stock Analysis",
+    page_icon="🥷",
     layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+# ──── Inject theme ─────────────────────────────
+active_nav = st.query_params.get("nav", "home")
+active_theme = get_theme(st.query_params)
+st.markdown(get_ninja_css(active_theme), unsafe_allow_html=True)
+st.markdown(
+    get_navbar_html(active_nav, active_theme),
+    unsafe_allow_html=True,
 )
 
 # ============================================================
@@ -769,13 +794,7 @@ def get_trend_insights(
     ) if insights else "Insufficient data for trend analysis."
 
 
-# ============================================================
-# HEADER
-# ============================================================
-
-st.title(
-    "NEPSE Ninja"
-)
+# (Header rendered by ninja_theme.py)
 
 
 
@@ -908,32 +927,143 @@ for optional_df in [
 
 
 
-(
-    tab_core,
-    
-    tab_company,
-   
+# ──── Sector mapping ───────────────────────────
+_sector_path = BASE_DIR / "sector_mapping.csv"
+sector_mapping = load_csv(str(_sector_path))
 
-    tab_latest,
-    tab_data,
-) = st.tabs(
-    [
-        "Core Functionalities",
-        
-        "Company Analysis",
-        "Latest Trading Day",
+POPULAR_STOCKS = [
+    "NABIL", "CHCL", "GBIME", "UPPER", "NICA",
+    "SCB", "EBL", "NLIC", "BPCL", "ADBL",
+]
 
-       
-        "Raw Data",
-    ]
-)
+# ============================================================
+# TAB: HOME
+# ============================================================
+
+if active_nav == "home":
+
+    st.markdown(
+        get_hero_html(get_market_status()),
+        unsafe_allow_html=True,
+    )
+
+    _pad1, _search_col, _pad2 = st.columns(
+        [1.2, 3, 1.2]
+    )
+
+    with _search_col:
+        home_symbol = st.text_input(
+            "Search",
+            placeholder="Search NEPSE stocks by symbol, name or sector...",
+            label_visibility="collapsed",
+            key="home_search_input",
+        ).strip().upper()
+
+    st.markdown(
+        get_popular_tags_html(POPULAR_STOCKS),
+        unsafe_allow_html=True,
+    )
+
+    if (
+        not sector_mapping.empty
+        and "sector" in sector_mapping.columns
+    ):
+        unique_sectors = sorted(
+            sector_mapping["sector"]
+            .dropna()
+            .unique()
+            .tolist()
+        )
+        st.markdown(
+            get_sector_pills_html(unique_sectors),
+            unsafe_allow_html=True,
+        )
+
+    if home_symbol:
+
+        _home_data = get_6month_data(
+            all_data, home_symbol
+        )
+
+        if _home_data.empty:
+            st.error(
+                f"No data found for symbol: **{home_symbol}**"
+            )
+        else:
+            _home_data = calculate_moving_averages(
+                _home_data
+            )
+            _home_metrics = calculate_metrics(
+                _home_data
+            )
+
+            st.markdown(
+                f"### {home_symbol} — Quick Analysis"
+            )
+
+            m1, m2, m3, m4, m5 = st.columns(5)
+
+            m1.metric(
+                "Current Price",
+                format_number(
+                    _home_metrics.get(
+                        "current_price"
+                    ), 2,
+                ),
+            )
+            m2.metric(
+                "6M Return %",
+                format_number(
+                    _home_metrics.get(
+                        "total_return"
+                    ), 2,
+                ),
+            )
+            m3.metric(
+                "Avg Daily Return %",
+                format_number(
+                    _home_metrics.get(
+                        "avg_daily_return"
+                    ), 4,
+                ),
+            )
+            m4.metric(
+                "Highest",
+                format_number(
+                    _home_metrics.get(
+                        "highest"
+                    ), 2,
+                ),
+            )
+            m5.metric(
+                "Lowest",
+                format_number(
+                    _home_metrics.get(
+                        "lowest"
+                    ), 2,
+                ),
+            )
+
+            _home_fig = create_candlestick_chart(
+                _home_data
+            )
+            if _home_fig is not None:
+                st.plotly_chart(
+                    _home_fig,
+                    use_container_width=True,
+                )
+
+            st.markdown("### Trend Insights")
+            st.markdown(
+                get_trend_insights(_home_data)
+            )
 
 
 # ============================================================
-# TAB 0: CORE FUNCTIONALITIES
+# TAB: STOCKS (Core Functionalities)
 # ============================================================
 
-with tab_core:
+if active_nav == "stocks":
 
     st.subheader(
         "Stock Symbol Analysis"
@@ -1188,7 +1318,7 @@ with tab_core:
 # TAB 2: COMPANY ANALYSIS
 # ============================================================
 
-with tab_company:
+if active_nav == "company":
 
     st.subheader(
         "Company / Symbol Analysis"
@@ -1644,7 +1774,7 @@ with tab_company:
 # TAB 3: LATEST TRADING DAY
 # ============================================================
 
-with tab_latest:
+if active_nav == "latest":
 
     st.subheader("Latest Trading Day")
 
@@ -1700,7 +1830,7 @@ with tab_latest:
 # TAB 6: RAW DATA
 # ============================================================
 
-with tab_data:
+if active_nav == "data":
 
     st.subheader(
         "Complete Dataset"
@@ -1784,10 +1914,12 @@ with tab_data:
 # FOOTER
 # ============================================================
 
-st.divider()
-
-st.caption(
-    "This dashboard reads locally processed data only. "
-    "To refresh the underlying dataset, run download_nepse_data.py again."
-)
+# st.markdown(
+#     '<div class="ninja-footer">'
+#     '🥷 <strong>NEPSE Ninja</strong> — Nepal Stock Analysis Dashboard<br>'
+#     'Data sourced from locally processed NEPSE datasets. '
+#     'Run <code>download_nepse_data.py</code> to refresh.'
+#     '</div>',
+#     unsafe_allow_html=True,
+# )
 
