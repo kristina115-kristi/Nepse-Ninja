@@ -2,6 +2,7 @@
 NEPSE Ninja - Custom Theme & UI Components
 """
 import datetime as _dt
+from urllib.parse import quote as _urlquote
 
 # ── Ninja SVG icon (parameterized size) ───────
 NINJA_SVG = '''<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}">
@@ -84,7 +85,14 @@ def get_ninja_css(theme="light"):
 html, body, .stApp {{
     background: var(--bg1) !important;
     color: var(--tp);
+    animation: appFadeIn .25s ease-out;
 }}
+
+@keyframes appFadeIn {{
+    from {{ opacity: 0; }}
+    to   {{ opacity: 1; }}
+}}
+
 
 .ninja-nav {{
     position: fixed; top: 0; left: 0; right: 0; z-index: 1000;
@@ -165,6 +173,7 @@ html, body, .stApp {{
 .mkt-badge {{
     display: inline-flex; align-items: center; gap: 16px;
     margin-top: 1rem; font-size: .82rem; color: var(--tm);
+    
 }}
 .mkt-badge .dot {{
     width: 7px; height: 7px; border-radius: 50%;
@@ -202,8 +211,69 @@ html, body, .stApp {{
     display: inline-block; padding: 5px 15px; margin: 3px;
     border-radius: 18px; font-size: .76rem; font-weight: 500;
     border: 1.4px solid; transition: all .22s ease;
+    text-decoration: none !important;
 }}
 .pill:hover {{ transform: translateY(-2px); box-shadow: 0 4px 14px rgba(0,0,0,.08); }}
+.pill {{ cursor: pointer; }}
+.pill-active {{ box-shadow: 0 0 0 2px currentColor inset; font-weight: 700; }}
+
+/* ── Sector company-list modal ── */
+.sector-modal-backdrop {{
+    position: fixed; inset: 0; z-index: 2000;
+    background: rgba(10,10,20,.42);
+    backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+    display: block; cursor: default;
+    animation: fadeIn .18s ease-out;
+}}
+.sector-modal {{
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    z-index: 2001; width: min(560px, 92vw); max-height: 76vh;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 18px; box-shadow: 0 24px 70px rgba(0,0,0,.28);
+    display: flex; flex-direction: column; overflow: hidden;
+    animation: fadeUp .22s ease-out;
+}}
+.sector-modal-header {{
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 1rem 1.3rem; border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}}
+.sector-modal-title {{
+    font-family: 'Outfit', sans-serif; font-weight: 700;
+    font-size: 1.05rem; color: var(--tp);
+}}
+.sector-modal-count {{ color: var(--tm); font-weight: 500; font-size: .85rem; }}
+.sector-modal-close {{
+    width: 28px; height: 28px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--bg1); border: 1px solid var(--border);
+    text-decoration: none; color: var(--tm); font-size: .85rem;
+    transition: all .18s ease;
+}}
+.sector-modal-close:hover {{ background: var(--ar); color: #fff; border-color: var(--ar); }}
+.sector-modal-body {{ overflow-y: auto; }}
+.company-row {{
+    display: flex; align-items: center; gap: 14px;
+    padding: .85rem 1.3rem; border-bottom: 1px solid var(--border);
+    text-decoration: none !important; transition: background .15s ease;
+}}
+.company-row * {{
+    text-decoration: none !important;
+}}
+.company-row:last-child {{ border-bottom: none; }}
+.company-row:hover {{ background: var(--bg1); }}
+.company-symbol {{
+    font-family: 'Outfit', sans-serif; font-weight: 800;
+    min-width: 64px; color: var(--tp); font-size: .92rem;
+}}
+.company-name {{ flex: 1; color: var(--tp); font-size: .88rem; }}
+.company-tag {{
+    padding: 4px 11px; border-radius: 12px; font-size: .64rem;
+    font-weight: 700; letter-spacing: .4px; text-transform: uppercase;
+    border: 1.3px solid; white-space: nowrap; flex-shrink: 0;
+}}
+.company-row-empty {{ padding: 1.5rem 1.3rem; color: var(--tm); font-size: .88rem; text-align: center; }}
+@keyframes fadeIn {{ from {{ opacity: 0; }} to {{ opacity: 1; }} }}
 .p-cb{{color:#e63946;border-color:#e63946;background:rgba(230,57,70,.08)}}
 .p-db{{color:#e76f51;border-color:#e76f51;background:rgba(231,111,81,.08)}}
 .p-hp{{color:#4361ee;border-color:#4361ee;background:rgba(67,97,238,.08)}}
@@ -217,7 +287,74 @@ html, body, .stApp {{
 .p-ot{{color:#888;border-color:#ccc;background:rgba(136,136,136,.08)}}
 .p-in{{color:#4361ee;border-color:#4361ee;background:rgba(67,97,238,.08)}}
 
-/* ── Metric cards ── */
+/* ── Sector pill BUTTONS (real st.button, not <a>) ──
+   Streamlit doesn't allow a custom class on a button, so each pill
+   button is preceded by a tiny marker span carrying the color class,
+   and we style the button immediately after it via an adjacent-sibling
+   selector. This keeps the colored-pill look while using a real
+   Streamlit widget (no full-page reload on click). ── */
+span.pill-mark {{
+    display: block; height: 0; margin: 0; padding: 0;
+}}
+span.pill-mark + div[data-testid="stButton"] {{
+    display: inline-block !important;
+    width: auto !important;
+}}
+span.pill-mark + div[data-testid="stButton"] > button {{
+    border-radius: 20px !important;
+    padding: 6px 17px !important;
+    font-size: .8rem !important;
+    font-weight: 700 !important;
+    white-space: nowrap !important;
+    width: auto !important;
+    min-width: 0 !important;
+    border: 2px solid transparent !important;
+    color: #fff !important;
+    box-shadow: 0 2px 10px rgba(0,0,0,.12) !important;
+    transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease !important;
+}}
+span.pill-mark + div[data-testid="stButton"] > button:hover {{
+    transform: translateY(-3px) scale(1.04) !important;
+    box-shadow: 0 8px 20px rgba(0,0,0,.22) !important;
+    filter: brightness(1.08);
+    border-color: #fff !important;
+}}
+span.pill-mark + div[data-testid="stButton"] > button:active {{
+    transform: translateY(-1px) scale(0.99) !important;
+}}
+span.pill-mark.p-cb + div[data-testid="stButton"] > button {{background: linear-gradient(135deg,#ff5f6d,#e63946) !important; border-color:#ff8a90 !important}}
+span.pill-mark.p-db + div[data-testid="stButton"] > button {{background: linear-gradient(135deg,#ff9a6c,#e76f51) !important; border-color:#ffb996 !important}}
+span.pill-mark.p-hp + div[data-testid="stButton"] > button {{background: linear-gradient(135deg,#5b7cfa,#4361ee) !important; border-color:#93a9ff !important}}
+span.pill-mark.p-li + div[data-testid="stButton"] > button {{background: linear-gradient(135deg,#a75cf0,#7b2cbf) !important; border-color:#c99bf5 !important}}
+span.pill-mark.p-ni + div[data-testid="stButton"] > button {{background: linear-gradient(135deg,#4fe0cc,#2ec4b6) !important; border-color:#8ff0e2 !important}}
+span.pill-mark.p-fi + div[data-testid="stButton"] > button {{background: linear-gradient(135deg,#ff5f6d,#e63946) !important; border-color:#ff8a90 !important}}
+span.pill-mark.p-mf + div[data-testid="stButton"] > button {{background: linear-gradient(135deg,#ffab40,#f77f00) !important; border-color:#ffcb84 !important}}
+span.pill-mark.p-ht + div[data-testid="stButton"] > button {{background: linear-gradient(135deg,#ff9a6c,#e76f51) !important; border-color:#ffb996 !important}}
+span.pill-mark.p-mg + div[data-testid="stButton"] > button {{background: linear-gradient(135deg,#9aa0a6,#6c7075) !important; border-color:#c2c6ca !important}}
+span.pill-mark.p-tr + div[data-testid="stButton"] > button {{background: linear-gradient(135deg,#ff5f6d,#e63946) !important; border-color:#ff8a90 !important}}
+span.pill-mark.p-ot + div[data-testid="stButton"] > button {{background: linear-gradient(135deg,#9aa0a6,#6c7075) !important; border-color:#c2c6ca !important}}
+span.pill-mark.p-in + div[data-testid="stButton"] > button {{background: linear-gradient(135deg,#5b7cfa,#4361ee) !important; border-color:#93a9ff !important}}
+
+/* Let the row of pill buttons wrap naturally and sit centered,
+   instead of stretching into equal-width, text-wrapping boxes. */
+div[data-testid="stHorizontalBlock"]:has(span.pill-mark) {{
+    flex-wrap: wrap !important;
+    row-gap: 10px !important;
+    justify-content: center !important;
+}}
+div[data-testid="stHorizontalBlock"]:has(span.pill-mark) > div {{
+    width: auto !important;
+    flex: 0 0 auto !important;
+}}
+
+
+/* Global underline fix — applies to every link in the app regardless
+   of load order, overriding Streamlit's own default anchor styling. */
+a, a:link, a:visited, a:hover, a:active {{
+    text-decoration: none !important;
+}}
+
+
 [data-testid="stMetric"] {{
     background: var(--card); backdrop-filter: blur(12px);
     border: 1px solid var(--border);
@@ -317,9 +454,9 @@ NINJA_CSS = get_ninja_css("light")
 
 def get_navbar_html(active_nav="home", theme="light"):
     links = [
-        ("home", "🏠 Home"),
-        ("stocks", "📊 Stocks"),
-        ("company", "🏢 Company"),
+        ("home", "⌂ Home"),
+        ("stocks", "↗ Stocks"),
+        ("company", "▥ Company"),
     ]
     # Added target="_self" to keep tabs in the same window
     nav_links = "".join(
@@ -395,10 +532,59 @@ _SECTOR_CLS = {
     "Investment": "in", "Mutual Fund": "in", "Others": "ot",
 }
 
+# Public alias so other modules (e.g. the main app) can reuse this mapping
+# to color-code their own widgets (e.g. Streamlit buttons) to match.
+SECTOR_CLASS_MAP = _SECTOR_CLS
 
-def get_sector_pills_html(sectors):
+
+def get_sector_pills_html(sectors, theme="light", active_sector=None):
     pills = []
     for s in sectors:
         c = _SECTOR_CLS.get(s, "ot")
-        pills.append(f'<span class="pill p-{c}">{s}</span>')
+        active_cls = " pill-active" if s == active_sector else ""
+        href = f"?nav=home&theme={theme}&sector={_urlquote(s)}"
+        pills.append(
+            f'<a href="{href}" target="_self" class="pill p-{c}{active_cls}">{s}</a>'
+        )
     return f'<div class="pill-row">{"".join(pills)}</div>'
+
+
+def get_company_list_modal_html(sector, companies, theme="light"):
+    """
+    companies: list of dicts like {"symbol": "ADBL", "name": "Agriculture Development Bank Limited"}
+    Renders a centered modal (click backdrop or the ✕ to close) listing the companies in `sector`.
+    """
+    c = _SECTOR_CLS.get(sector, "ot")
+    close_href = f"?nav=home&theme={theme}"
+
+    rows = []
+    for comp in companies:
+        sym = (comp.get("symbol") or "").strip()
+        name = (comp.get("name") or "").strip()
+        row_href = f"?nav=stocks&theme={theme}&symbol={_urlquote(sym)}"
+        rows.append(
+            f'<a href="{row_href}" target="_self" class="company-row">'
+            f'<span class="company-symbol">{sym}</span>'
+            f'<span class="company-name">{name}</span>'
+            f'<span class="company-tag p-{c}">{sector.upper()}</span>'
+            
+            f"</a>"
+        )
+
+    rows_html = (
+        "".join(rows)
+        if rows
+        else '<div class="company-row-empty">No companies found for this sector.</div>'
+    )
+
+    return (
+        f'<a href="{close_href}" target="_self" class="sector-modal-backdrop"></a>'
+        '<div class="sector-modal">'
+        '<div class="sector-modal-header">'
+        f'<span class="sector-modal-title">{sector} '
+        f'<span class="sector-modal-count">({len(companies)})</span></span>'
+        f'<a href="{close_href}" target="_self" class="sector-modal-close">✕</a>'
+        "</div>"
+        f'<div class="sector-modal-body">{rows_html}</div>'
+        "</div>"
+    )

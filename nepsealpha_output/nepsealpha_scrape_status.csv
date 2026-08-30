@@ -1,0 +1,3 @@
+﻿symbol,status,tables,rows,message,updated_at_utc
+ACLBSL,no_financial_table,0,0,No qualifying financial table appeared within 25s.,2026-08-26T01:49:35.291074+00:00
+ADBL,failed,0,0,TypeError: unsupported operand type(s) for +: 'NoneType' and 'str',2026-08-26T01:49:39.723616+00:00
