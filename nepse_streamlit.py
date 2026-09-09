@@ -2458,9 +2458,17 @@ POPULAR_STOCKS = [
 
 if active_nav == "home":
 
+    home_index_snapshot = None
+    try:
+        home_index_snapshot = _call_with_backoff(
+            "load_live_nepse_index", load_live_nepse_index
+        )
+    except Exception:
+        pass
+
     st.markdown(
         get_hero_html(
-            get_market_status()
+            get_market_status(home_index_snapshot)
         ),
         unsafe_allow_html=True,
     )

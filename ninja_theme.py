@@ -160,8 +160,8 @@ html, body, .stApp {{
 
 .ninja-nav {{
     position: fixed; top: 0; left: 0; right: 0; z-index: 1000;
-    height: 52px; display: flex; align-items: center; justify-content: space-between;
-    padding: 0 1.25rem;
+    height: 56px; display: flex; align-items: center; justify-content: space-between;
+    padding: 0 2rem;
     background: var(--nav-bg);
     backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
     border-bottom: 1px solid var(--border);
@@ -205,11 +205,11 @@ html, body, .stApp {{
    targeting one specific widget with CSS (far more reliable than
    sibling-selector tricks). */
 .st-key-nepse_nav_row {{
-    position: fixed !important; top: 0; left: 50vw !important;
+    position: fixed !important; top: 14px; left: 50vw !important;
     right: auto !important; z-index: 1001;
     transform: translateX(-50%) !important;
     width: max-content !important; max-width: none !important;
-    height: 52px; display: flex !important; align-items: center;
+    height: 56px; display: flex !important; align-items: center;
     margin: 0 !important; padding: 0 !important;
 }}
 .st-key-nepse_nav_row [data-testid="stHorizontalBlock"] {{
@@ -259,11 +259,11 @@ html, body, .stApp {{
 .st-key-theme_toggle_btn button p {{ margin: 0; }}
 .theme-toggle:hover {{ transform: translateY(-1px) scale(1.05); }}
 
-.block-container {{ padding-top: 62px !important; max-width: 1200px; }}
+.block-container {{ padding-top: 76px !important; max-width: 1200px; }}
 
 /* ── Hero ── */
 .hero {{
-    text-align: center; padding: 2.5rem 1rem 1rem;
+    text-align: center; padding: 1rem 1rem 1rem;
     animation: fadeUp .55s ease-out;
 }}
 .hero-logo {{ margin-bottom: .6rem; }}
@@ -293,6 +293,11 @@ html, body, .stApp {{
 .dot-green {{ background: var(--ag); animation: blink 1.8s infinite; }}
 @keyframes blink {{ 0%,100% {{opacity:1}} 50% {{opacity:.35}} }}
 .mkt-badge .sep {{ width: 1px; height: 14px; background: var(--border); }}
+.mkt-index {{ color: var(--tp); font-weight: 600; white-space: nowrap; }}
+.mkt-index strong {{ color: var(--ac); font-weight: 800; }}
+.mkt-index-change {{ font-weight: 700; white-space: nowrap; }}
+.mkt-index-change.up {{ color: var(--ag); }}
+.mkt-index-change.down {{ color: var(--ar); }}
 .ai-tag {{ color: var(--ac); font-weight: 600; }}
 
 /* ── Popular tags ── */
@@ -488,6 +493,52 @@ html, body, .stApp {{
 .nic-breadth .dot.up {{ background: var(--ag); }}
 .nic-breadth .dot.flat {{ background: #f0b429; }}
 .nic-breadth .dot.down {{ background: var(--ar); }}
+
+/* ── AI Recommendation card (per-symbol fundamentals verdict) ── */
+.ai-rec-card {{
+    display: flex; align-items: stretch;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--r); overflow: hidden;
+    margin: .3rem 0 1.4rem; box-shadow: 0 2px 16px rgba(0,0,0,.04);
+    animation: fadeUp .35s ease-out;
+}}
+.ai-rec-left {{
+    flex: 0 0 180px; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 8px;
+    padding: 1.3rem 1rem; text-align: center;
+    border-right: 1px solid var(--border);
+    background: var(--bg1);
+}}
+.ai-rec-left.buy {{ border-right: 3px solid var(--ag); }}
+.ai-rec-left.sell {{ border-right: 3px solid var(--ar); }}
+.ai-rec-left.hold {{ border-right: 3px solid #f0b429; }}
+.ai-rec-eyebrow {{
+    font-size: .64rem; font-weight: 700; letter-spacing: 1.4px;
+    text-transform: uppercase; color: var(--tm);
+}}
+.ai-rec-verdict {{
+    font-family: 'Outfit', sans-serif; font-weight: 800;
+    font-size: 1.7rem; letter-spacing: .5px;
+}}
+.ai-rec-verdict.buy {{ color: var(--ag); }}
+.ai-rec-verdict.sell {{ color: var(--ar); }}
+.ai-rec-verdict.hold {{ color: #f0b429; }}
+.ai-rec-body {{
+    flex: 1; padding: 1.2rem 1.4rem;
+    display: flex; flex-direction: column; justify-content: center; gap: .5rem;
+}}
+.ai-rec-summary {{ color: var(--tp); font-size: .92rem; line-height: 1.55; }}
+.ai-rec-reasons {{
+    display: flex; flex-wrap: wrap; gap: 6px; margin-top: .1rem;
+}}
+.ai-rec-chip {{
+    padding: 3px 10px; border-radius: 12px; font-size: .7rem;
+    font-weight: 600; background: var(--bg1); border: 1px solid var(--border);
+    color: var(--tm);
+}}
+.ai-rec-disclaimer {{
+    font-size: .68rem; color: var(--tm); margin-top: .4rem;
+}}
 .p-cb{{color:#e63946;border-color:#e63946;background:rgba(230,57,70,.08)}}
 .p-db{{color:#e76f51;border-color:#e76f51;background:rgba(231,111,81,.08)}}
 .p-hp{{color:#4361ee;border-color:#4361ee;background:rgba(67,97,238,.08)}}
@@ -712,7 +763,7 @@ def is_market_open():
     return trading and 11 <= h < 15
 
 
-def get_market_status():
+def get_market_status(index_snapshot=None):
     now = _dt.datetime.now(ZoneInfo("Asia/Kathmandu"))
     wd = now.weekday()  # Mon=0 ... Sun=6
     h = now.hour
@@ -738,10 +789,34 @@ def get_market_status():
             nd = (wd + nm.get(wd, 1)) % 7
             s2 = f"Opens {days[nd]}"
 
+    index_html = ""
+    index_value = index_snapshot.get("value") if index_snapshot else None
+    index_percent = index_snapshot.get("percent") if index_snapshot else None
+    index_points = index_snapshot.get("points") if index_snapshot else None
+    if isinstance(index_value, (int, float)):
+        index_html = (
+            '<span class="mkt-index">NEPSE '
+            f'<strong>{index_value:,.2f}</strong></span>'
+        )
+        if isinstance(index_percent, (int, float)):
+            direction = "up" if index_percent >= 0 else "down"
+            arrow = "↗" if index_percent >= 0 else "↘"
+            index_html += (
+                f' <span class="mkt-index-change {direction}">'
+                f'{arrow} {index_percent:+.2f}%</span>'
+            )
+        if isinstance(index_points, (int, float)):
+            direction = "up" if index_points >= 0 else "down"
+            arrow = "▲" if index_points >= 0 else "▼"
+            index_html += (
+                f' <span class="mkt-index-change {direction}">'
+                f'{arrow} {index_points:+.2f} pts</span>'
+            )
+
     return (
         f'<span>{dot}{s1}</span>'
         f'<span class="sep"></span><span>{s2}</span>'
-        f'<span class="sep"></span>'
+        f'<span class="sep"></span>{index_html}'
     )
 
 
@@ -872,6 +947,42 @@ def get_nepse_index_card_html(snapshot, breadth, theme="light"):
         f'<span class="nic-breadth-sep">·</span>'
         f'<span class="dot down"></span>{down} down'
         f'</span>'
+        "</div>"
+        "</div>"
+    )
+
+
+def get_ai_recommendation_card_html(verdict, summary, reasons=None, theme="light"):
+    """
+    verdict: "BUY" | "SELL" | "HOLD"
+    summary: short paragraph explaining the call (plain text, no HTML).
+    reasons: optional list of short strings shown as chips, e.g.
+        ["Negative EPS", "P/E 42.1x", "ROE -3.2%"]
+    Renders the split "AI RECOMMENDATION" card used on the Company /
+    Symbol Analysis tab, directly under the fundamentals the verdict
+    was derived from.
+    """
+    verdict = (verdict or "HOLD").upper()
+    cls = {"BUY": "buy", "SELL": "sell"}.get(verdict, "hold")
+
+    reasons_html = ""
+    if reasons:
+        chips = "".join(f'<span class="ai-rec-chip">{r}</span>' for r in reasons)
+        reasons_html = f'<div class="ai-rec-reasons">{chips}</div>'
+
+    return (
+        '<div class="ai-rec-card">'
+        f'<div class="ai-rec-left {cls}">'
+        '<span class="ai-rec-eyebrow">AI Recommendation</span>'
+        f'<span class="ai-rec-verdict {cls}">{verdict}</span>'
+        "</div>"
+        '<div class="ai-rec-body">'
+        f'<div class="ai-rec-summary">{summary}</div>'
+        f"{reasons_html}"
+        '<div class="ai-rec-disclaimer">'
+        "Auto-generated from reported fundamentals — not financial advice. "
+        "Verify independently before trading."
+        "</div>"
         "</div>"
         "</div>"
     )
