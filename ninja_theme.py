@@ -3,6 +3,7 @@ NEPSE Ninja - Custom Theme & UI Components
 """
 import datetime as _dt
 from urllib.parse import quote as _urlquote
+from zoneinfo import ZoneInfo
 
 # ── Ninja SVG icon (parameterized size) ───────
 NINJA_SVG = '''<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}">
@@ -48,7 +49,7 @@ def toggle_theme(current_theme="light") -> str:
 
 
 # ── Full CSS (theme-aware) ────────────────────
-def get_ninja_css(theme="light"):
+def get_ninja_css(theme="light", active_nav="home"):
     if theme == "dark":
         vars_block = """
     --bg0: #0b0b14; --bg1: #12121c;
@@ -74,6 +75,68 @@ def get_ninja_css(theme="light"):
     --r: 14px;
 """
 
+    # These force every native Streamlit widget (buttons, inputs, selects,
+    # radios, dataframes) to stay legible against our custom --tp/--surface
+    # palette, regardless of what theme the *browser* auto-detected for
+    # Streamlit's own built-in styling (which otherwise can leave e.g.
+    # white button text sitting on our white background). Applied for
+    # BOTH themes — not just light — since the same white-on-white /
+    # dark-on-dark mismatch can happen either direction.
+    widget_contrast_overrides = f"""
+    [data-testid="stWidgetLabel"], [data-testid="stWidgetLabel"] p,
+    [data-testid="stTextInput"] label, [data-testid="stTextInput"] label p,
+    [data-testid="stSelectbox"] label, [data-testid="stSelectbox"] label p,
+    [data-testid="stMultiSelect"] label, [data-testid="stMultiSelect"] label p,
+    [data-testid="stDateInput"] label, [data-testid="stDateInput"] label p,
+    [data-testid="stNumberInput"] label, [data-testid="stNumberInput"] label p {{
+        color: var(--tp) !important;
+    }}
+    [data-testid="stTextInput"] input,
+    [data-testid="stNumberInput"] input {{
+        color: var(--tp) !important;
+        -webkit-text-fill-color: var(--tp) !important;
+        background: transparent !important;
+    }}
+    [data-testid="stTextInput"] input::placeholder,
+    [data-testid="stNumberInput"] input::placeholder {{
+        color: var(--tm) !important;
+        opacity: 1 !important;
+        -webkit-text-fill-color: var(--tm) !important;
+    }}
+    [data-baseweb="select"] > div {{
+        background: var(--surface) !important;
+        border-color: var(--border) !important;
+    }}
+    [data-baseweb="select"] input,
+    [data-baseweb="select"] div,
+    [data-baseweb="select"] span {{
+        color: var(--tp) !important;
+    }}
+    /* BaseWeb renders the dropdown menu / date picker in a portal
+       appended to <body>, outside our normal CSS scope, so it needs
+       its own explicit background + text rules. */
+    [data-baseweb="popover"] [data-baseweb="menu"],
+    [data-baseweb="popover"] ul[role="listbox"] {{
+        background: var(--surface) !important;
+    }}
+    [data-baseweb="popover"] li,
+    [data-baseweb="popover"] li *,
+    [data-baseweb="calendar"],
+    [data-baseweb="calendar"] * {{
+        color: var(--tp) !important;
+    }}
+    .stButton > button, .stButton > button p, .stButton > button span {{
+        color: var(--tp) !important;
+    }}
+    .stButton > button {{
+        background: var(--surface) !important;
+        border-color: var(--border) !important;
+    }}
+    [data-testid="stDataFrame"] * {{
+        color: var(--tp);
+    }}
+    """
+
     return f"""<style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Outfit:wght@300;400;500;600;700;800;900&display=swap');
 
@@ -81,6 +144,7 @@ def get_ninja_css(theme="light"):
 [data-testid="stSidebar"] {{ display: none; }}
 
 :root {{{vars_block}}}
+{widget_contrast_overrides}
 
 html, body, .stApp {{
     background: var(--bg1) !important;
@@ -96,43 +160,28 @@ html, body, .stApp {{
 
 .ninja-nav {{
     position: fixed; top: 0; left: 0; right: 0; z-index: 1000;
-    height: 56px; display: flex; align-items: center; justify-content: space-between;
-    padding: 0 2rem;
+    height: 52px; display: flex; align-items: center; justify-content: space-between;
+    padding: 0 1.25rem;
     background: var(--nav-bg);
     backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
     border-bottom: 1px solid var(--border);
     box-shadow: 0 1px 4px rgba(0,0,0,.03);
 }}
-.nav-brand {{ display: flex; align-items: center; gap: 10px; }}
+.nav-brand {{ display: flex; align-items: center; gap: 10px; flex: 1 1 0; }}
 .nav-brand-text {{
     font-family: 'Outfit', sans-serif; font-weight: 800;
     font-size: 1.15rem; color: var(--tp);
 }}
 .nav-brand-text em {{ font-style: normal; color: var(--ag); }}
-.nav-links {{ display: flex; gap: 4px; align-items: center; }}
+.nav-links {{ display: flex; gap: 4px; align-items: center; flex: 1 1 0; justify-content: center; }}
 .nav-links a {{
     font-size: .82rem; font-weight: 500;
-    padding: 6px 14px; border-radius: 8px; color: var(--tm);
-    text-decoration: none;
+    padding: 7px 16px; border-radius: 8px; color: var(--tm);
+    text-decoration: none !important; white-space: nowrap;
+    transition: background .18s ease, color .18s ease;
 }}
-.nav-links a.nav-active {{ background: var(--ac); color: #fff; }}
-[data-testid="stRadio"] {{
-    position: fixed; top: 0; left: 50%; z-index: 1001;
-    transform: translateX(-50%);
-    height: 56px; display: flex; align-items: center;
-}}
-[data-testid="stRadio"] > label {{ display: none !important; }}
-[data-testid="stRadio"] [role="radiogroup"] {{ gap: 4px; }}
-[data-testid="stRadio"] [role="radio"] {{
-    min-height: 30px; padding: 6px 14px; border-radius: 8px;
-    color: var(--tm); font-size: .82rem; font-weight: 500;
-}}
-[data-testid="stRadio"] [role="radio"][aria-checked="true"] {{
-    background: var(--ac); color: #fff;
-}}
-[data-testid="stRadio"] [role="radio"] > div:first-child {{ display: none; }}
-[data-testid="stRadio"] [role="radio"] p {{ margin: 0; }}
-.nav-right {{ display: flex; align-items: center; gap: 10px; }}
+.nav-links {{ display: flex; gap: 4px; align-items: center; flex: 1 1 0; justify-content: center; }}
+.nav-right {{ display: flex; align-items: center; gap: 10px; flex: 1 1 0; justify-content: flex-end; }}
 .nav-avatar {{
     width: 32px; height: 32px; border-radius: 50%;
     background: linear-gradient(135deg, var(--ac), #7b2cbf);
@@ -147,9 +196,70 @@ html, body, .stApp {{
     font-size: 1rem; cursor: pointer; text-decoration: none;
     transition: transform .2s ease;
 }}
+
+/* ── Nav tabs (real st.button widgets, not <a> links) ──
+   A click just triggers Streamlit's fast in-place rerun over the
+   already-open connection — no browser navigation, no full-page
+   reload, no flash. Streamlit gives every keyed container/widget a
+   stable ".st-key-<key>" class, which is the supported hook for
+   targeting one specific widget with CSS (far more reliable than
+   sibling-selector tricks). */
+.st-key-nepse_nav_row {{
+    position: fixed !important; top: 0; left: 50vw !important;
+    right: auto !important; z-index: 1001;
+    transform: translateX(-50%) !important;
+    width: max-content !important; max-width: none !important;
+    height: 52px; display: flex !important; align-items: center;
+    margin: 0 !important; padding: 0 !important;
+}}
+.st-key-nepse_nav_row [data-testid="stHorizontalBlock"] {{
+    display: flex !important; align-items: center; gap: 4px;
+    width: max-content !important; max-width: none !important;
+    margin: 0 !important; padding: 0 !important;
+}}
+.st-key-nepse_nav_row [data-testid="stColumn"] {{
+    width: auto !important; flex: 0 0 auto !important; min-width: 0 !important;
+    max-width: max-content !important; margin: 0 !important; padding: 0 !important;
+}}
+.st-key-nepse_nav_row .stButton > button {{
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    color: var(--tm) !important;
+    font-size: .82rem !important;
+    font-weight: 500 !important;
+    padding: 7px 16px !important;
+    border-radius: 8px !important;
+    white-space: nowrap !important;
+    transition: background .18s ease, color .18s ease !important;
+}}
+.st-key-nepse_nav_row .stButton > button:hover {{
+    background: var(--bg1) !important;
+    color: var(--tp) !important;
+    transform: none !important;
+    box-shadow: none !important;
+}}
+
+/* ── Theme toggle (also a real button now — instant, no reload) ── */
+.st-key-theme_toggle_btn {{
+    position: fixed; top: 12px; right: 32px; z-index: 1001;
+    width: 32px !important;
+}}
+.st-key-theme_toggle_btn button {{
+    width: 32px !important; height: 32px !important; min-height: 32px !important;
+    border-radius: 50% !important; padding: 0 !important;
+    background: var(--surface) !important; border: 1px solid var(--border) !important;
+    display: flex !important; align-items: center; justify-content: center;
+    font-size: 1rem !important; box-shadow: none !important;
+    transition: transform .2s ease !important;
+}}
+.st-key-theme_toggle_btn button:hover {{
+    transform: translateY(-1px) scale(1.05) !important;
+}}
+.st-key-theme_toggle_btn button p {{ margin: 0; }}
 .theme-toggle:hover {{ transform: translateY(-1px) scale(1.05); }}
 
-.block-container {{ padding-top: 76px !important; max-width: 1200px; }}
+.block-container {{ padding-top: 62px !important; max-width: 1200px; }}
 
 /* ── Hero ── */
 .hero {{
@@ -199,8 +309,9 @@ html, body, .stApp {{
     display: inline-block; padding: 5px 14px; margin: 3px;
     background: var(--tag-bg); border: 1px solid var(--tag-border); border-radius: 18px;
     font-size: .78rem; font-weight: 500; color: var(--tag-tx);
-    transition: all .2s ease;
+    transition: all .2s ease; text-decoration: none !important;
 }}
+.stock-tag:hover {{ transform: translateY(-2px); border-color: var(--ac); color: var(--ac); }}
 
 /* ── Sector pills ── */
 .pill-row {{
@@ -274,6 +385,109 @@ html, body, .stApp {{
 }}
 .company-row-empty {{ padding: 1.5rem 1.3rem; color: var(--tm); font-size: .88rem; text-align: center; }}
 @keyframes fadeIn {{ from {{ opacity: 0; }} to {{ opacity: 1; }} }}
+
+/* ── Live search suggestions (home search box) ── */
+.search-suggest-wrap {{
+    max-width: 640px; margin: 10px auto 0;
+    animation: fadeUp .25s ease-out;
+}}
+.search-suggest-panel {{
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 14px; overflow: hidden; text-align: left;
+    box-shadow: 0 12px 34px rgba(0,0,0,.10);
+}}
+.search-suggest-empty {{
+    padding: 1.1rem 1.3rem; color: var(--tm);
+    font-size: .88rem; text-align: center;
+}}
+.search-suggest-footer {{
+    padding: .55rem 1.3rem; text-align: center;
+    font-size: .74rem; color: var(--tm);
+    border-top: 1px solid var(--border);
+    background: var(--bg1);
+}}
+
+/* ── NEPSE Index snapshot card ── */
+.nepse-index-card {{
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--r); padding: 1.15rem 1.4rem 1rem;
+    margin: 0 0 1.4rem; box-shadow: 0 2px 16px rgba(0,0,0,.04);
+    animation: fadeUp .35s ease-out;
+}}
+.nic-top {{
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: .6rem;
+}}
+.nic-label {{
+    display: flex; align-items: center; gap: 7px;
+    font-size: .72rem; font-weight: 700; letter-spacing: 1.3px;
+    text-transform: uppercase; color: var(--tm);
+}}
+.nic-label .dot {{
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--tm); display: inline-block;
+}}
+.nic-top-right {{ display: flex; align-items: center; gap: 8px; }}
+.nic-status-pill {{
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 12px; border-radius: 14px;
+    font-size: .72rem; font-weight: 600; color: var(--tm);
+    background: var(--bg1); border: 1px solid var(--border);
+}}
+.nic-status-pill .dot {{ width: 7px; height: 7px; border-radius: 50%; }}
+.nic-status-pill .dot.open {{ background: var(--ag); animation: blink 1.8s infinite; }}
+.nic-status-pill .dot.closed {{ background: var(--ar); }}
+.nic-expand {{
+    width: 30px; height: 30px; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--bg1); border: 1px solid var(--border);
+    color: var(--tm); font-size: .8rem;
+    text-decoration: none !important; cursor: pointer;
+    transition: all .18s ease;
+}}
+.nic-expand:hover {{ border-color: var(--ac); color: var(--ac); background: var(--surface); }}
+.nic-mid {{
+    display: flex; align-items: center; gap: 12px;
+    flex-wrap: wrap; margin-bottom: .25rem;
+}}
+.nic-value {{
+    font-family: 'Outfit', sans-serif; font-weight: 800;
+    font-size: 2.35rem; color: var(--tp); letter-spacing: -1px;
+}}
+.nic-change-col {{ display: flex; flex-direction: column; gap: 2px; }}
+.nic-change-pill {{
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 4px 11px; border-radius: 13px;
+    font-weight: 700; font-size: .8rem; width: fit-content;
+}}
+.nic-change-pill.up {{ color: var(--ag); background: rgba(46,196,182,.12); }}
+.nic-change-pill.down {{ color: var(--ar); background: rgba(230,57,70,.12); }}
+.nic-points {{ font-size: .8rem; font-weight: 600; padding-left: 2px; }}
+.nic-points.up {{ color: var(--ag); }}
+.nic-points.down {{ color: var(--ar); }}
+.nic-bottom {{
+    display: flex; align-items: center; justify-content: space-between;
+    flex-wrap: wrap; gap: 8px; margin-top: .65rem;
+}}
+.nic-sentiment-pill {{
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 13px; border-radius: 14px;
+    font-size: .74rem; font-weight: 600;
+    background: var(--bg1); border: 1px solid var(--border); color: var(--tm);
+}}
+.nic-sentiment-pill .dot {{ width: 7px; height: 7px; border-radius: 50%; }}
+.nic-sentiment-pill.bullish .dot {{ background: var(--ag); }}
+.nic-sentiment-pill.bearish .dot {{ background: var(--ar); }}
+.nic-sentiment-pill.neutral .dot {{ background: var(--tm); }}
+.nic-breadth {{ font-size: .82rem; color: var(--tm); display: inline-flex; align-items: center; gap: 6px; }}
+.nic-breadth-sep {{ color: var(--border); }}
+.nic-breadth .dot {{
+    width: 7px; height: 7px; border-radius: 50%;
+    display: inline-block; margin-right: 5px;
+}}
+.nic-breadth .dot.up {{ background: var(--ag); }}
+.nic-breadth .dot.flat {{ background: #f0b429; }}
+.nic-breadth .dot.down {{ background: var(--ar); }}
 .p-cb{{color:#e63946;border-color:#e63946;background:rgba(230,57,70,.08)}}
 .p-db{{color:#e76f51;border-color:#e76f51;background:rgba(231,111,81,.08)}}
 .p-hp{{color:#4361ee;border-color:#4361ee;background:rgba(67,97,238,.08)}}
@@ -413,6 +627,11 @@ a, a:link, a:visited, a:hover, a:active {{
     border-radius: 10px; border-color: var(--border);
     background: var(--surface); color: var(--tp);
 }}
+/* Selected-option chips inside multiselect (e.g. "SMA 20" tag) —
+   rectangular instead of the BaseWeb default rounded-pill shape. */
+.stMultiSelect span[data-baseweb="tag"] {{
+    border-radius: 5px !important;
+}}
 [data-testid="stTextInput"] > div > div {{
     border-radius: 14px !important;
     border: 1px solid var(--border) !important;
@@ -443,6 +662,18 @@ hr {{ border: none; border-top: 1px solid var(--border); margin: 1.5rem 0; }}
     from {{ opacity: 0; transform: translateY(18px); }}
     to   {{ opacity: 1; transform: translateY(0); }}
 }}
+
+/* Active nav tab — highlighted as a solid pill, same treatment as the
+   popular-stock tags / sector pills elsewhere in the app. */
+.st-key-nav_btn_{active_nav} .stButton > button {{
+    background: rgba(67, 97, 238, .14) !important;
+    color: var(--ac) !important;
+    font-weight: 600 !important;
+}}
+.st-key-nav_btn_{active_nav} .stButton > button:hover {{
+    background: rgba(67, 97, 238, .20) !important;
+    color: var(--ac) !important;
+}}
 </style>"""
 
 
@@ -452,38 +683,43 @@ NINJA_CSS = get_ninja_css("light")
 
 # ── HTML generators ───────────────────────────
 
-def get_navbar_html(active_nav="home", theme="light"):
-    links = [
-        ("home", "⌂ Home"),
-        ("stocks", "↗ Stocks"),
-        ("company", "▥ Company"),
-    ]
-    # Added target="_self" to keep tabs in the same window
-    nav_links = "".join(
-        f'<a href="?nav={key}&theme={theme}" target="_self" class="{"nav-active" if active_nav == key else ""}">{label}</a>'
-        for key, label in links
-    )
-    next_theme = toggle_theme(theme)
-    toggle_icon = "🌙" if theme == "light" else "☀️"
+NAV_ITEMS = [
+    ("home", "⌂ Home"),
+    ("stocks", "🗠 Stocks"),
+    ("movers", "𓉱 Market Movers"),
+    ("company", "🗐 Company"),
+]
+
+
+def get_navbar_html(theme="light"):
     return (
         '<div class="ninja-nav">'
         f'<div class="nav-brand">{NINJA_SVG_SM}'
         '<span class="nav-brand-text">Nepse<em>Ninja</em></span></div>'
-        f'<div class="nav-links">{nav_links}</div>'
-        '<div class="nav-right">'
-        f'<a href="?nav={active_nav}&theme={next_theme}" target="_self" class="theme-toggle" title="Toggle theme">{toggle_icon}</a>'
-        '</div></div>'
+        '</div>'
     )
 
 
+def is_market_open():
+    """
+    True during NEPSE's Mon–Fri 11:00–15:00 trading window.
+    Shared by get_market_status() and the NEPSE index card.
+    """
+    now = _dt.datetime.now(ZoneInfo("Asia/Kathmandu"))
+    wd = now.weekday()  # Mon=0 ... Sun=6
+    h = now.hour
+    trading = wd in (0, 1, 2, 3, 4)
+    return trading and 11 <= h < 15
+
+
 def get_market_status():
-    now = _dt.datetime.now()
+    now = _dt.datetime.now(ZoneInfo("Asia/Kathmandu"))
     wd = now.weekday()  # Mon=0 ... Sun=6
     h = now.hour
 
     # Monday through Friday trading window (11:00 to 15:00)
     trading = wd in (0, 1, 2, 3, 4)
-    is_open = trading and 11 <= h < 15
+    is_open = is_market_open()
 
     days = ["Monday", "Tuesday", "Wednesday", "Thursday",
             "Friday", "Saturday", "Sunday"]
@@ -517,8 +753,12 @@ def get_hero_html(market_html):
     )
 
 
-def get_popular_tags_html(stocks):
-    tags = "".join(f'<span class="stock-tag">{s}</span>' for s in stocks)
+def get_popular_tags_html(stocks, theme="light"):
+    tags = "".join(
+        f'<a href="?nav=home&theme={theme}&symbol={_urlquote(s)}" '
+        f'target="_self" class="stock-tag">{s}</a>'
+        for s in stocks
+    )
     return f'<div class="pop-row"><span class="pop-label">POPULAR:</span>{tags}</div>'
 
 
@@ -547,6 +787,142 @@ def get_sector_pills_html(sectors, theme="light", active_sector=None):
             f'<a href="{href}" target="_self" class="pill p-{c}{active_cls}">{s}</a>'
         )
     return f'<div class="pill-row">{"".join(pills)}</div>'
+
+
+def get_nepse_index_card_html(snapshot, breadth, theme="light"):
+    """
+    snapshot: dict or None — {"value": 2542.77, "points": 4.66, "percent": 0.18}
+        `points`/`percent` may be None even if `value` is known.
+    breadth: dict — {"up": int, "flat": int, "down": int}
+    Renders the "NEPSE INDEX" snapshot card (value, change, market
+    status, sentiment tag, breadth) shown above Stock Symbol Analysis.
+    """
+    is_open = is_market_open()
+    status_label = "OPEN" if is_open else "CLOSED"
+    status_dot_cls = "open" if is_open else "closed"
+
+    value = snapshot.get("value") if snapshot else None
+    points = snapshot.get("points") if snapshot else None
+    percent = snapshot.get("percent") if snapshot else None
+
+    value_html = f"{value:,.2f}" if isinstance(value, (int, float)) else "N/A"
+
+    change_html = ""
+    if isinstance(percent, (int, float)):
+        direction = "up" if percent >= 0 else "down"
+        arrow = "↗" if percent >= 0 else "↘"
+        change_html += (
+            f'<span class="nic-change-pill {direction}">'
+            f'{arrow} {percent:+.2f}%</span>'
+        )
+    if isinstance(points, (int, float)):
+        direction = "up" if points >= 0 else "down"
+        tri = "▲" if points >= 0 else "▼"
+        change_html += (
+            f'<span class="nic-points {direction}">{tri} {points:+.2f} pts</span>'
+        )
+
+    up, flat, down = (
+        breadth.get("up", 0),
+        breadth.get("flat", 0),
+        breadth.get("down", 0),
+    )
+
+    # Sentiment: prefer the actual index % change; fall back to
+    # market breadth (advancers vs decliners) when no index % is known.
+    if isinstance(percent, (int, float)):
+        score = percent
+    elif (up + down) > 0:
+        score = (up - down) / (up + down) * 100
+    else:
+        score = 0
+
+    if score > 3:
+        sentiment_cls, sentiment_label = "bullish", "BULLISH"
+    elif score > 0.05:
+        sentiment_cls, sentiment_label = "bullish", "LEANING BULLISH"
+    elif score < -3:
+        sentiment_cls, sentiment_label = "bearish", "BEARISH"
+    elif score < -0.05:
+        sentiment_cls, sentiment_label = "bearish", "LEANING BEARISH"
+    else:
+        sentiment_cls, sentiment_label = "neutral", "NEUTRAL"
+
+    return (
+        '<div class="nepse-index-card">'
+        '<div class="nic-top">'
+        '<div class="nic-label"><span class="dot"></span>NEPSE INDEX</div>'
+        '<div class="nic-top-right">'
+        f'<span class="nic-status-pill"><span class="dot {status_dot_cls}"></span>{status_label}</span>'
+        f'<a href="?nav=stocks&theme={theme}&expand_index=1" '
+        f'target="_self" class="nic-expand" title="Open live NEPSE chart">⤢</a>'
+        "</div>"
+        "</div>"
+        '<div class="nic-mid">'
+        f'<span class="nic-value">{value_html}</span>'
+        f'<div class="nic-change-col">{change_html}</div>'
+        "</div>"
+        '<div class="nic-bottom">'
+        f'<span class="nic-sentiment-pill {sentiment_cls}">'
+        f'<span class="dot"></span>{sentiment_label}</span>'
+        f'<span class="nic-breadth">'
+        f'<span class="dot up"></span>{up} up'
+        f'<span class="nic-breadth-sep">·</span>'
+        f'<span class="dot flat"></span>{flat} flat'
+        f'<span class="nic-breadth-sep">·</span>'
+        f'<span class="dot down"></span>{down} down'
+        f'</span>'
+        "</div>"
+        "</div>"
+    )
+
+
+def get_search_suggestions_html(matches, total_count, theme="light"):
+    """
+    matches: list of dicts like
+        {"symbol": "NABIL", "name": "Nabil Bank Limited", "sector": "Commercial Banks"}
+    Renders a live suggestions card under the home search box, showing
+    each match's full company name and sector tag, plus a footer with
+    the total number of stocks loaded — matching the sector-modal
+    row style so the whole app stays visually consistent.
+    """
+    rows = []
+    for m in matches:
+        sym = (m.get("symbol") or "").strip()
+        name = (m.get("name") or "").strip()
+        sector = (m.get("sector") or "").strip()
+        c = _SECTOR_CLS.get(sector, "ot")
+        href = f"?nav=home&theme={theme}&symbol={_urlquote(sym)}"
+        tag_html = (
+            f'<span class="company-tag p-{c}">{sector.upper()}</span>'
+            if sector
+            else ""
+        )
+        rows.append(
+            f'<a href="{href}" target="_self" class="company-row">'
+            f'<span class="company-symbol">{sym}</span>'
+            f'<span class="company-name">{name}</span>'
+            f"{tag_html}"
+            f"</a>"
+        )
+
+    body = (
+        "".join(rows)
+        if rows
+        else '<div class="search-suggest-empty">No matching stocks found.</div>'
+    )
+
+    footer = (
+        f'<div class="search-suggest-footer">'
+        f"{total_count} stocks loaded · Type to filter"
+        f"</div>"
+    )
+
+    return (
+        '<div class="search-suggest-wrap">'
+        f'<div class="search-suggest-panel">{body}{footer}</div>'
+        "</div>"
+    )
 
 
 def get_company_list_modal_html(sector, companies, theme="light"):

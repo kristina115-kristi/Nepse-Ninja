@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from io import StringIO
+import re
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 import requests
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -16,13 +19,18 @@ importlib.reload(_ninja_theme)
 from ninja_theme import (
     get_ninja_css,
     get_theme,
+    toggle_theme,
     get_navbar_html,
     get_hero_html,
     get_market_status,
     get_popular_tags_html,
     get_sector_pills_html,
     get_company_list_modal_html,
+    get_search_suggestions_html,
+    get_nepse_index_card_html,
+    get_ai_recommendation_card_html,
     SECTOR_CLASS_MAP,
+    NAV_ITEMS,
 )
 
 
@@ -39,28 +47,91 @@ st.set_page_config(
 
 
 # ============================================================
-# THEME
+# DEBUG FLAG
 # ============================================================
+# Set this to True locally (or drive it from an env var / secrets)
+# to see full technical error details. Keep False in production
+# so end users never see file paths or shell commands.
 
-active_nav = st.query_params.get("nav", "home")
-active_theme = get_theme(st.query_params)
+DEBUG_MODE = False
+
+try:
+    import os
+    DEBUG_MODE = os.environ.get("NEPSE_DEBUG", "false").lower() == "true"
+except Exception:
+    DEBUG_MODE = False
+
+
+# ============================================================
+# THEME + NAVIGATION
+# ============================================================
+# Both live in session_state so switching tabs or the color theme is
+# a real Streamlit widget interaction — an in-place script rerun over
+# the already-open connection — instead of a browser navigation.
+# session_state is only seeded from the URL once per session (e.g. on
+# first load, or after a full reload triggered by an in-page link
+# like a stock/sector tag), so deep links still work.
+
+_nav_key_list = [key for key, _ in NAV_ITEMS]
+
+if "active_nav" not in st.session_state:
+    _seed_nav = st.query_params.get("nav", "home")
+    if isinstance(_seed_nav, list):
+        _seed_nav = _seed_nav[0] if _seed_nav else "home"
+    st.session_state["active_nav"] = (
+        _seed_nav if _seed_nav in _nav_key_list else "home"
+    )
+
+if "active_theme" not in st.session_state:
+    st.session_state["active_theme"] = get_theme(st.query_params)
+
+active_nav = st.session_state["active_nav"]
+active_theme = st.session_state["active_theme"]
 
 st.markdown(
-    get_ninja_css(active_theme),
+    get_ninja_css(active_theme, active_nav),
     unsafe_allow_html=True,
 )
 
 st.markdown(
-    get_navbar_html(active_nav, active_theme),
+    get_navbar_html(active_theme),
     unsafe_allow_html=True,
 )
+
+# Nav tabs + theme toggle as real st.button widgets, wrapped in
+# st.container(key=...) so Streamlit's own ".st-key-<key>" class (see
+# ninja_theme.py) can fixed-position them to sit inside the navbar
+# above. A click updates session_state and calls st.rerun() — an
+# in-place rerun over the already-open connection, no full page
+# reload, no flash.
+with st.container(key="nepse_nav_row"):
+    _nav_cols = st.columns(len(NAV_ITEMS))
+    for _nav_col, (_nav_key, _nav_label) in zip(_nav_cols, NAV_ITEMS):
+        with _nav_col:
+            if st.button(_nav_label, key=f"nav_btn_{_nav_key}"):
+                st.session_state["active_nav"] = _nav_key
+                st.query_params["nav"] = _nav_key
+                st.rerun()
+
+_theme_icon = "🌙" if active_theme == "light" else "☀️"
+if st.button(_theme_icon, key="theme_toggle_btn", help="Toggle theme"):
+    _next_theme = toggle_theme(active_theme)
+    st.session_state["active_theme"] = _next_theme
+    st.query_params["theme"] = _next_theme
+    st.rerun()
 
 
 # ============================================================
 # PATH SETTINGS
 # ============================================================
 
-BASE_DIR = Path.cwd()
+# FIX #1: Anchor BASE_DIR to the script's own location instead of
+# the process's current working directory. Path.cwd() depends on
+# *where the app was launched from*, which can vary (VS Code run
+# button, terminal, service manager, Docker, hosting platform),
+# causing the data file to "not be found" and dumping raw file
+# paths / commands onto the page via the old error branch.
+BASE_DIR = Path(__file__).resolve().parent
 
 DEFAULT_PROCESSED_DIR = (
     BASE_DIR / "nepse_data" / "processed"
@@ -71,10 +142,13 @@ LATEST_DAY_FILE = "NEPSE_LATEST_DAY.csv"
 RECENT_FILE = "NEPSE_RECENT_30_DAYS.csv"
 COVERAGE_FILE = "NEPSE_SYMBOL_COVERAGE.csv"
 DAILY_SUMMARY_FILE = "NEPSE_DAILY_SUMMARY.csv"
+LIVE_MARKET_URL = "https://www.sharesansar.com/today-share-price"
+LIVE_INDEX_URL = "https://www.sharesansar.com/market"
 
 # These are now optional/legacy.
 # Financial fundamentals come from the online API.
 FINANCIAL_FILE = "nepsealpha_financials.csv"
+RATIO_FILE = "nepsealpha_output/nepsealpha_ratios.csv"
 DIVIDEND_FILE = "dividends.csv"
 
 processed_dir = DEFAULT_PROCESSED_DIR
@@ -101,6 +175,233 @@ def load_csv(path: str, parse_dates=None) -> pd.DataFrame:
         parse_dates=parse_dates,
         low_memory=False,
     )
+
+
+def extract_market_date(page_html: str) -> str:
+    for marker in re.finditer(r"As\s+(?:on|of)", page_html, flags=re.IGNORECASE):
+        nearby = page_html[marker.start(): marker.start() + 500]
+        date_match = re.search(r"20\d{2}-\d{2}-\d{2}", nearby)
+        if date_match:
+            return date_match.group(0)
+    return _dt.date.today().isoformat()
+
+
+@st.cache_data(show_spinner=False)
+def load_prepared_csv(path: str, modified_ns: int) -> pd.DataFrame:
+    return prepare_all_data(load_csv(path))
+
+
+# ------------------------------------------------------------
+# Live-fetch failure backoff
+# ------------------------------------------------------------
+# Root cause of "everything feels slow": these live scrapes are
+# decorated with @st.cache_data, which only caches *successful*
+# calls. When ShareSansar is slow/unreachable, every single rerun
+# of the app (literally any button click anywhere) re-attempts the
+# same 30-second-timeout request before failing — so one flaky
+# endpoint stalls the entire UI. This records recent failures in
+# session_state and skips straight to raising for a short cooldown
+# instead of hitting the network again on every rerun.
+_LIVE_FETCH_TIMEOUT = 8
+_LIVE_FETCH_BACKOFF_SECONDS = 5 * 60
+
+
+def _call_with_backoff(name: str, fetch_fn):
+    state_key = f"_live_fetch_backoff::{name}"
+    now = _dt.datetime.now().timestamp()
+    retry_after = st.session_state.get(state_key, 0)
+
+    if now < retry_after:
+        raise RuntimeError(
+            f"{name} failed recently; skipping retry for "
+            f"{int(retry_after - now)}s to keep the app responsive."
+        )
+
+    try:
+        return fetch_fn()
+    except Exception:
+        st.session_state[state_key] = now + _LIVE_FETCH_BACKOFF_SECONDS
+        raise
+
+
+@st.cache_data(ttl=15 * 60, show_spinner=False)
+def load_live_market_data() -> pd.DataFrame:
+    """Load the latest NEPSE trading table published by ShareSansar."""
+    response = requests.get(
+        LIVE_MARKET_URL,
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=_LIVE_FETCH_TIMEOUT,
+    )
+    response.raise_for_status()
+
+    tables = pd.read_html(StringIO(response.text))
+    if not tables:
+        raise ValueError("The live market page did not contain a price table.")
+
+    live = tables[0].rename(
+        columns={
+            "Symbol": "symbol",
+            "Open": "open",
+            "High": "high",
+            "Low": "low",
+            "Close": "close",
+            "Vol": "traded_quantity",
+            "Turnover": "traded_amount",
+            "Diff %": "per_change",
+        }
+    )
+    required = {
+        "symbol",
+        "open",
+        "high",
+        "low",
+        "close",
+        "traded_quantity",
+        "traded_amount",
+        "per_change",
+    }
+    missing = required.difference(live.columns)
+    if missing:
+        raise ValueError(f"Live market table is missing: {', '.join(sorted(missing))}")
+
+    live = live[list(required)].copy()
+    live["published_date"] = extract_market_date(response.text)
+    live["status"] = pd.NA
+    live["return"] = pd.NA
+    live["return_percent"] = pd.NA
+    live["return_gap_pp"] = pd.NA
+    return live
+
+@st.cache_data(ttl=15 * 60, show_spinner=False)
+def load_live_nepse_index() -> dict:
+    """Load the latest NEPSE index value published by ShareSansar."""
+    response = requests.get(
+        LIVE_INDEX_URL,
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=_LIVE_FETCH_TIMEOUT,
+    )
+    response.raise_for_status()
+
+    for table in pd.read_html(StringIO(response.text)):
+        if table.empty:
+            continue
+
+        if "Index" not in table.columns or "Close" not in table.columns:
+            continue
+
+        for _, row in table.iterrows():
+            if str(row.get("Index", "")).strip().lower() != "nepse index":
+                continue
+
+            value = pd.to_numeric(
+                pd.Series([row["Close"]]), errors="coerce"
+            ).iloc[0]
+            points = pd.to_numeric(
+                pd.Series([row.get("Point Change")]), errors="coerce"
+            ).iloc[0]
+            if pd.isna(value):
+                continue
+
+            value = float(value)
+            points = None if pd.isna(points) else float(points)
+            previous = value - points if points is not None else None
+            percent = (
+                points / previous * 100
+                if previous not in (None, 0)
+                else None
+            )
+            return {
+                "value": value,
+                "points": points,
+                "percent": percent,
+            }
+
+    raise ValueError("The live page did not contain a NEPSE Index row.")
+
+
+@st.cache_data(ttl=15 * 60, show_spinner=False)
+def load_live_nepse_index_history() -> pd.DataFrame:
+    """Load recent NEPSE OHLC history from ShareSansar."""
+    response = requests.get(
+        "https://www.sharesansar.com/index-history-data",
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=_LIVE_FETCH_TIMEOUT,
+    )
+    response.raise_for_status()
+
+    for table in pd.read_html(StringIO(response.text)):
+        def normalize_column(column):
+            if isinstance(column, tuple):
+                parts = [
+                    str(part).strip()
+                    for part in column
+                    if str(part).strip()
+                    and not str(part).lower().startswith("unnamed")
+                ]
+                column = parts[-1] if parts else ""
+            return re.sub(r"[^a-z]+", " ", str(column).lower()).strip()
+
+        normalized = {
+            column: normalize_column(column)
+            for column in table.columns
+        }
+        required = {"open", "high", "low", "close"}
+        if not required.issubset(set(normalized.values())):
+            continue
+
+        source_columns = {value: key for key, value in normalized.items()}
+        date_column = next(
+            (
+                key
+                for key, value in normalized.items()
+                if value in {"date", "published date", "trading date"}
+            ),
+            None,
+        )
+        turnover_column = next(
+            (key for key, value in normalized.items() if "turnover" in value), None
+        )
+        if date_column is None:
+            continue
+
+        history = pd.DataFrame(
+            {
+                "published_date": pd.to_datetime(
+                    table[date_column], errors="coerce"
+                ),
+                "open": pd.to_numeric(table[source_columns["open"]], errors="coerce"),
+                "high": pd.to_numeric(table[source_columns["high"]], errors="coerce"),
+                "low": pd.to_numeric(table[source_columns["low"]], errors="coerce"),
+                "close": pd.to_numeric(table[source_columns["close"]], errors="coerce"),
+                "volume": (
+                    pd.to_numeric(table[turnover_column], errors="coerce")
+                    if turnover_column is not None
+                    else pd.NA
+                ),
+            }
+        )
+        return history.dropna(subset=["published_date", "close"]).sort_values(
+            "published_date"
+        ).reset_index(drop=True)
+
+    return pd.DataFrame()
+
+
+def merge_live_market_data(
+    historical: pd.DataFrame,
+    live: pd.DataFrame,
+) -> pd.DataFrame:
+    if live.empty:
+        return historical
+
+    merged = pd.concat([historical, live], ignore_index=True, sort=False)
+    merged["published_date"] = pd.to_datetime(
+        merged["published_date"], errors="coerce"
+    )
+    merged = merged.drop_duplicates(
+        subset=["published_date", "symbol"], keep="last"
+    )
+    return prepare_all_data(merged)
 
 
 def safe_numeric(series: pd.Series) -> pd.Series:
@@ -204,6 +505,38 @@ def prepare_all_data(
             .str.strip()
             .str.upper()
         )
+
+    # The live ShareSansar scrape (load_live_market_data) never fills in
+    # return/return_percent — it sets them to NA and leaves it at that
+    # (see the comment there). Since the live row is usually the most
+    # recent trading day for a symbol, that NA was surfacing as "N/A"
+    # for "Latest Return %" on the Company/Symbol Analysis page even
+    # though we have everything needed (yesterday's close from history)
+    # to compute it ourselves. Backfill any missing return/return_percent
+    # from the day-over-day close change, per symbol, without touching
+    # values that already came from the source data.
+    if {"symbol", "published_date", "close"}.issubset(df.columns):
+        df = df.sort_values(["symbol", "published_date"])
+        prev_close = df.groupby("symbol")["close"].shift(1)
+        safe_prev_close = prev_close.replace(0, pd.NA)
+        computed_return = df["close"] - prev_close
+        computed_return_percent = (
+            (df["close"] - safe_prev_close) / safe_prev_close * 100
+        )
+
+        if "return" in df.columns:
+            df["return"] = df["return"].where(
+                df["return"].notna(), computed_return
+            )
+        else:
+            df["return"] = computed_return
+
+        if "return_percent" in df.columns:
+            df["return_percent"] = df["return_percent"].where(
+                df["return_percent"].notna(), computed_return_percent
+            )
+        else:
+            df["return_percent"] = computed_return_percent
 
     return (
         df
@@ -986,7 +1319,7 @@ def load_online_financials():
 
         response = requests.get(
             FINANCIAL_API_URL,
-            timeout=30,
+            timeout=_LIVE_FETCH_TIMEOUT,
         )
 
         response.raise_for_status()
@@ -995,9 +1328,9 @@ def load_online_financials():
 
         if not isinstance(data, list):
 
-            st.error(
-                "Financial API returned "
-                "an unexpected format."
+            st.warning(
+                "Financial data is temporarily "
+                "unavailable in an unexpected format."
             )
 
             return []
@@ -1006,10 +1339,14 @@ def load_online_financials():
 
     except Exception as e:
 
-        st.error(
-            f"Could not load online "
-            f"financial data: {e}"
+        st.warning(
+            "Could not load online financial data "
+            "right now. Some fundamentals may be "
+            "unavailable."
         )
+
+        if DEBUG_MODE:
+            st.caption(f"Debug detail: {e}")
 
         return []
 
@@ -1098,31 +1435,221 @@ def financial_value(
         return value
 
 
+def get_ratio_value(
+    report: dict,
+    ratio_data: pd.DataFrame,
+    symbol: str,
+    names: tuple[str, ...],
+):
+    """Read a ratio from the online report or the local ratio export."""
+    for name in names:
+        value = financial_value(report, name)
+        if value is not None:
+            return value
+
+    if ratio_data.empty or "Particular" not in ratio_data.columns:
+        return None
+
+    matching = ratio_data[
+        ratio_data["symbol"].astype(str).str.upper().eq(symbol.upper())
+        & ratio_data["Particular"].astype(str).str.lower().isin(
+            {name.lower() for name in names}
+        )
+    ]
+    if matching.empty:
+        return None
+
+    row = matching.iloc[0]
+    for column in reversed(ratio_data.columns):
+        if column in {"symbol", "Particular"}:
+            continue
+        value = pd.to_numeric(
+            pd.Series([str(row[column]).replace("%", "").replace(",", "")]),
+            errors="coerce",
+        ).iloc[0]
+        if pd.notna(value):
+            return float(value)
+
+    return None
+
+
+def generate_ai_recommendation(
+    *,
+    eps=None,
+    pe=None,
+    pb=None,
+    roe=None,
+    roa=None,
+    net_margin=None,
+    symbol: str = "",
+):
+    """
+    Simple, transparent rule-based verdict from the fundamentals already
+    shown on the Company / Symbol Analysis tab (EPS, P/E, P/B, ROE, ROA,
+    net margin). This intentionally stays rule-based rather than a
+    black-box model, so every reason chip traces back to a number the
+    user can already see on the page above it.
+
+    Returns (verdict, summary_text, reason_chips).
+    """
+    score = 0
+    reasons: list[str] = []
+
+    if eps is not None:
+        if eps < 0:
+            score -= 2
+            reasons.append(f"Negative EPS ({eps:.2f})")
+        else:
+            score += 1
+            reasons.append(f"Positive EPS ({eps:.2f})")
+
+    if pe is not None:
+        if pe < 0:
+            score -= 1
+            reasons.append("Negative P/E (loss-making)")
+        elif pe > 40:
+            score -= 1
+            reasons.append(f"High P/E ({pe:.1f}x) — looks overvalued")
+        elif pe < 15:
+            score += 1
+            reasons.append(f"Low P/E ({pe:.1f}x) — looks attractively valued")
+
+    if pb is not None:
+        if pb > 5:
+            score -= 1
+            reasons.append(f"High P/B ({pb:.1f}x)")
+        elif 0 < pb < 1.5:
+            score += 1
+            reasons.append(f"Low P/B ({pb:.1f}x)")
+
+    if roe is not None:
+        if roe < 0:
+            score -= 1
+            reasons.append(f"Negative ROE ({roe:.1f}%)")
+        elif roe > 15:
+            score += 1
+            reasons.append(f"Strong ROE ({roe:.1f}%)")
+
+    if net_margin is not None:
+        if net_margin < 0:
+            score -= 1
+            reasons.append(f"Negative net margin ({net_margin:.1f}%)")
+        elif net_margin > 15:
+            score += 1
+            reasons.append(f"Healthy net margin ({net_margin:.1f}%)")
+
+    if not reasons:
+        return (
+            "HOLD",
+            f"Not enough reported fundamentals for {symbol or 'this stock'} "
+            "to form a confident call yet — check back once more financial "
+            "data is available.",
+            [],
+        )
+
+    if score <= -2:
+        verdict = "SELL"
+        summary = (
+            f"Based on the reported fundamentals, {symbol or 'this stock'} "
+            "screens as overvalued relative to its earnings quality. "
+            "Investors should exercise caution and weigh the risks before "
+            "adding to a position, and monitor upcoming results for signs "
+            "of improvement before re-entering."
+        )
+    elif score >= 2:
+        verdict = "BUY"
+        summary = (
+            f"{symbol or 'This stock'}'s reported fundamentals look "
+            "comparatively healthy — reasonable valuation alongside "
+            "positive earnings and profitability. As always, this is one "
+            "input among many; confirm with recent price action and news "
+            "before acting."
+        )
+    else:
+        verdict = "HOLD"
+        summary = (
+            f"{symbol or 'This stock'}'s fundamentals are mixed — some "
+            "supportive signals and some concerns, without a clear edge "
+            "either way. Worth monitoring rather than acting on "
+            "immediately."
+        )
+
+    return verdict, summary, reasons
+
+
+def render_financial_report_readable(report: dict, title: str = "Report Details"):
+    """
+    Render a financial report dict as a clean, human-readable
+    table instead of a raw st.json() dump. Keys are prettified
+    (e.g. 'net_worth_per_share' -> 'Net Worth Per Share') and
+    values are formatted where numeric.
+    """
+
+    if not report:
+        st.info("No details available for this report.")
+        return
+
+    st.markdown(f"**{title}**")
+
+    rows = []
+
+    for key, value in report.items():
+
+        label = key.replace("_", " ").strip().title()
+
+        # Try to format numeric-looking values nicely
+        display_value = value
+
+        try:
+            if value is not None and not isinstance(value, (dict, list, bool)):
+                if pd.notna(value):
+                    numeric_val = float(value)
+                    display_value = format_number(numeric_val, 2)
+        except Exception:
+            display_value = value
+
+        if isinstance(value, (dict, list)):
+            # Skip nested structures in the summary table;
+            # keep the raw expander below for full detail.
+            continue
+
+        rows.append({"Field": label, "Value": display_value})
+
+    if rows:
+        summary_df = pd.DataFrame(rows)
+        st.dataframe(
+            summary_df,
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info("No displayable fields found in this report.")
+
+
 # ============================================================
 # CHECK MAIN FILE
 # ============================================================
 
 if not all_data_path.exists():
 
-    st.error(
-        "NEPSE_ALL_DATA.csv was not found."
+    # FIX #2: Clean, user-facing fallback instead of exposing
+    # raw shell commands and file paths via st.code(). Full
+    # technical details are only shown when DEBUG_MODE is on
+    # (set NEPSE_DEBUG=true as an environment variable locally).
+
+    st.warning(
+        "⚠️ Data is currently unavailable. "
+        "Please try again later or contact the site administrator."
     )
 
-    st.write(
-        "Run the downloader first:"
-    )
+    if DEBUG_MODE:
 
-    st.code(
-        "python download_nepse_data.py"
-    )
-
-    st.write(
-        "Then make sure this file exists:"
-    )
-
-    st.code(
-        str(all_data_path)
-    )
+        st.divider()
+        st.caption("Developer debug info (DEBUG_MODE is ON):")
+        st.write("Run the downloader first:")
+        st.code("python download_nepse_data.py")
+        st.write("Then make sure this file exists:")
+        st.code(str(all_data_path))
 
     st.stop()
 
@@ -1135,39 +1662,79 @@ with st.spinner(
     "Loading NEPSE historical data..."
 ):
 
-    all_data = load_csv(
-        str(all_data_path)
+    all_data = load_prepared_csv(
+        str(all_data_path),
+        all_data_path.stat().st_mtime_ns,
     )
 
-    all_data = prepare_all_data(
-        all_data
+
+if st.sidebar.button("Refresh live market data"):
+    load_live_market_data.clear()
+    load_live_nepse_index.clear()
+    load_live_nepse_index_history.clear()
+    for _k in list(st.session_state.keys()):
+        if _k.startswith("_live_fetch_backoff::"):
+            del st.session_state[_k]
+    st.rerun()
+
+
+live_market_data = pd.DataFrame()
+try:
+    with st.spinner("Loading latest NEPSE market prices..."):
+        live_market_data = _call_with_backoff(
+            "load_live_market_data", load_live_market_data
+        )
+    live_date = (
+        str(live_market_data["published_date"].iloc[0])
+        if not live_market_data.empty
+        else ""
     )
+    live_fingerprint = (
+        f"{live_date}:{len(live_market_data)}:"
+        f"{live_market_data['close'].sum()}"
+        if not live_market_data.empty
+        else "empty"
+    )
+    data_cache_key = f"{all_data_path.stat().st_mtime_ns}:{live_fingerprint}"
+    if st.session_state.get("_all_data_cache_key") != data_cache_key:
+        all_data = merge_live_market_data(all_data, live_market_data)
+        st.session_state["_all_data_cache_key"] = data_cache_key
+        st.session_state["_all_data_cached"] = all_data
+    else:
+        all_data = st.session_state["_all_data_cached"]
+    st.sidebar.success(
+        f"Live prices loaded: {len(live_market_data):,} symbols"
+    )
+except Exception as exc:
+    st.sidebar.warning(
+        "Live prices are unavailable; showing the last saved dataset."
+    )
+    if DEBUG_MODE:
+        st.sidebar.caption(f"Debug detail: {exc}")
 
 
 if all_data.empty:
 
-    st.error(
-        "The main NEPSE dataset is empty."
+    st.warning(
+        "⚠️ The NEPSE dataset is currently empty. "
+        "Please try again later."
     )
 
     st.stop()
 
 
 # ============================================================
-# LOAD ONLINE FINANCIAL DATA
+# LOAD ONLINE FINANCIAL DATA ONLY FOR COMPANY TAB
 # ============================================================
 
-with st.spinner(
-    "Loading online financial data..."
-):
-
-    online_financial_data = (
-        load_online_financials()
-    )
+online_financial_data = []
+if active_nav == "company":
+    with st.spinner("Loading online financial data..."):
+        online_financial_data = load_online_financials()
 
 
 # ============================================================
-# LOAD OPTIONAL FILES
+# LOAD OPTIONAL SUMMARY ONLY WHEN NEEDED
 # ============================================================
 
 @st.cache_data(show_spinner=False)
@@ -1238,14 +1805,18 @@ def load_optional_files(
     )
 
 
-(
-    latest_day,
-    recent_data,
-    coverage,
-    daily_summary,
-) = load_optional_files(
-    str(processed_dir)
-)
+latest_day = pd.DataFrame()
+recent_data = pd.DataFrame()
+coverage = pd.DataFrame()
+daily_summary = pd.DataFrame()
+
+if active_nav == "stocks":
+    (
+        latest_day,
+        recent_data,
+        coverage,
+        daily_summary,
+    ) = load_optional_files(str(processed_dir))
 
 
 # ============================================================
@@ -1264,13 +1835,13 @@ dividend_path = (
     BASE_DIR / DIVIDEND_FILE
 )
 
-financial_data = load_csv(
-    str(financial_path)
-)
-
-dividend_data = load_csv(
-    str(dividend_path)
-)
+financial_data = pd.DataFrame()
+dividend_data = pd.DataFrame()
+if active_nav == "company":
+    ratio_path = BASE_DIR / RATIO_FILE
+    financial_data = load_csv(str(ratio_path)) if ratio_path.exists() else pd.DataFrame()
+    if financial_data.empty:
+        financial_data = load_csv(str(financial_path))
 
 
 # ============================================================
@@ -1284,6 +1855,588 @@ _sector_path = (
 sector_mapping = load_csv(
     str(_sector_path)
 )
+
+
+# ============================================================
+# LIVE SEARCH SUGGESTIONS (symbol + full company name + sector)
+# ============================================================
+
+@st.cache_data(show_spinner=False)
+def build_stock_directory(mapping: pd.DataFrame):
+    """
+    Flattens sector_mapping into a list of
+    {"symbol", "name", "sector"} dicts used to power the
+    live search-suggestions dropdown on the home page.
+    """
+
+    if mapping.empty:
+        return []
+
+    symbol_col = next(
+        (c for c in ["symbol", "Symbol", "SYMBOL"] if c in mapping.columns),
+        None,
+    )
+
+    name_col = next(
+        (
+            c
+            for c in [
+                "name",
+                "company_name",
+                "Name",
+                "Company Name",
+                "company",
+            ]
+            if c in mapping.columns
+        ),
+        None,
+    )
+
+    sector_col = "sector" if "sector" in mapping.columns else None
+
+    if not symbol_col:
+        return []
+
+    directory = []
+
+    for _, row in mapping.iterrows():
+
+        symbol = str(row.get(symbol_col, "")).strip().upper()
+
+        if not symbol:
+            continue
+
+        directory.append(
+            {
+                "symbol": symbol,
+                "name": (
+                    str(row.get(name_col, "")).strip()
+                    if name_col
+                    else ""
+                ),
+                "sector": (
+                    str(row.get(sector_col, "")).strip()
+                    if sector_col
+                    else ""
+                ),
+            }
+        )
+
+    return sorted(directory, key=lambda d: d["symbol"])
+
+
+def filter_stock_matches(query: str, directory, limit: int = 6):
+    """
+    Ranks directory entries against `query`: symbol/name prefix
+    matches first, then any substring match, de-duplicated by symbol.
+    """
+
+    q = query.strip().lower()
+
+    if not q:
+        return []
+
+    starts, contains = [], []
+    seen = set()
+
+    for entry in directory:
+
+        symbol_l = entry["symbol"].lower()
+
+        if symbol_l in seen:
+            continue
+
+        name_l = entry["name"].lower()
+
+        if symbol_l.startswith(q) or name_l.startswith(q):
+            starts.append(entry)
+            seen.add(symbol_l)
+
+        elif q in symbol_l or q in name_l:
+            contains.append(entry)
+            seen.add(symbol_l)
+
+    return (starts + contains)[:limit]
+
+
+def disable_search_autofill():
+    """
+    Streamlit's text inputs are plain <input> elements, so browsers
+    offer their own saved-value autofill suggestions (e.g. a stray
+    "kristina" from an unrelated form on the same browser profile)
+    on top of them. This reaches into the parent document and turns
+    native autocomplete off for every Streamlit text input across
+    the whole app — home search, stock symbol search, etc — and
+    re-applies itself whenever new inputs appear (tab switches,
+    reruns) via a MutationObserver.
+    """
+
+    components.html(
+        """
+        <script>
+        (function () {
+            function killAutofill() {
+                try {
+                    const doc = window.parent.document;
+                    doc.querySelectorAll(
+                        '.stTextInput input, input[type="text"]'
+                    ).forEach((el) => {
+                        el.setAttribute('autocomplete', 'off');
+                        el.setAttribute('autocorrect', 'off');
+                        el.setAttribute('autocapitalize', 'off');
+                        el.setAttribute('spellcheck', 'false');
+                        if (!el.dataset.ninjaNamed) {
+                            el.setAttribute('name', 'ninja-field-' + Math.random().toString(36).slice(2));
+                            el.dataset.ninjaNamed = '1';
+                        }
+                    });
+                } catch (e) {}
+            }
+            killAutofill();
+            setTimeout(killAutofill, 300);
+            const target = window.parent.document.body;
+            if (target) {
+                new MutationObserver(killAutofill).observe(target, {
+                    childList: true,
+                    subtree: true,
+                });
+            }
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
+
+disable_search_autofill()
+
+
+# ============================================================
+# NEPSE INDEX SNAPSHOT (value / change / breadth)
+# ============================================================
+
+def get_market_breadth(df: pd.DataFrame) -> dict:
+    """
+    Counts advancers / unchanged / decliners on the latest trading
+    day, from whichever per-stock % change column is available.
+    """
+    if df.empty or "published_date" not in df.columns:
+        return {"up": 0, "flat": 0, "down": 0}
+
+    latest_date = df["published_date"].max()
+    latest = df[df["published_date"] == latest_date]
+
+    change_col = next(
+        (c for c in ["per_change", "return_percent"] if c in latest.columns),
+        None,
+    )
+
+    if not change_col:
+        return {"up": 0, "flat": 0, "down": 0}
+
+    changes = safe_numeric(latest[change_col]).dropna()
+
+    return {
+        "up": int((changes > 0).sum()),
+        "flat": int((changes == 0).sum()),
+        "down": int((changes < 0).sum()),
+    }
+
+
+def get_nepse_index_snapshot(summary_df: pd.DataFrame):
+    """
+    Pulls the latest overall NEPSE index value / points change /
+    percent change out of the daily-summary file, tolerating a
+    range of likely column names. Returns None when the summary
+    file doesn't carry recognizable index columns (in which case
+    the index card falls back to showing "N/A" for the value while
+    still showing live market breadth and status).
+    """
+    if summary_df.empty:
+        return None
+
+    df = summary_df.copy()
+
+    if "published_date" in df.columns:
+        df = df.sort_values("published_date")
+
+    row = df.iloc[-1]
+
+    index_col = next(
+        (
+            c
+            for c in [
+                "index_value",
+                "nepse_index",
+                "close_index",
+                "index_close",
+                "current_index",
+                "index",
+            ]
+            if c in df.columns
+        ),
+        None,
+    )
+
+    if not index_col:
+        return None
+
+    points_col = next(
+        (
+            c
+            for c in [
+                "point_change",
+                "points_change",
+                "change_points",
+                "net_change",
+                "index_point_change",
+            ]
+            if c in df.columns
+        ),
+        None,
+    )
+
+    percent_col = next(
+        (
+            c
+            for c in [
+                "percent_change",
+                "change_percent",
+                "index_percent_change",
+                "per_change",
+            ]
+            if c in df.columns
+        ),
+        None,
+    )
+
+    def _num(col):
+        if not col:
+            return None
+        val = safe_numeric(pd.Series([row.get(col)])).iloc[0]
+        return None if pd.isna(val) else float(val)
+
+    return {
+        "value": _num(index_col),
+        "points": _num(points_col),
+        "percent": _num(percent_col),
+    }
+
+
+def get_nepse_index_history(summary_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Builds a published_date / open / high / low / close / volume
+    frame for the overall NEPSE index out of the daily-summary file,
+    used to power the expandable index chart. Falls back to a
+    close-only line series when full OHLC columns aren't present.
+    """
+    if summary_df.empty or "published_date" not in summary_df.columns:
+        return pd.DataFrame()
+
+    df = summary_df.sort_values("published_date").copy()
+
+    # If the file has a "symbol" column it's per-stock data, not a
+    # market-level summary — plain open/high/low/close would then
+    # belong to individual stocks, not the index, so only use them
+    # as a fallback when there's no symbol column at all.
+    has_symbol_col = any(
+        c in df.columns for c in ["symbol", "Symbol", "SYMBOL"]
+    )
+
+    def _pick(names, fallback_plain=None):
+        col = next((c for c in names if c in df.columns), None)
+        if (
+            not col
+            and not has_symbol_col
+            and fallback_plain
+            and fallback_plain in df.columns
+        ):
+            col = fallback_plain
+        return col
+
+    open_col = _pick(["index_open", "nepse_open"], "open")
+    high_col = _pick(["index_high", "nepse_high"], "high")
+    low_col = _pick(["index_low", "nepse_low"], "low")
+    close_col = _pick(
+        [
+            "index_value",
+            "nepse_index",
+            "close_index",
+            "index_close",
+            "current_index",
+            "index",
+        ],
+        "close",
+    )
+    volume_col = next(
+        (
+            c
+            for c in ["turnover", "total_turnover", "traded_amount"]
+            if c in df.columns
+        ),
+        None,
+    )
+
+    if not close_col:
+        return pd.DataFrame()
+
+    history = pd.DataFrame(
+        {
+            "published_date": df["published_date"],
+            "close": safe_numeric(df[close_col]),
+            "open": safe_numeric(df[open_col]) if open_col else pd.NA,
+            "high": safe_numeric(df[high_col]) if high_col else pd.NA,
+            "low": safe_numeric(df[low_col]) if low_col else pd.NA,
+            "volume": safe_numeric(df[volume_col]) if volume_col else pd.NA,
+        }
+    )
+
+    history = history.dropna(subset=["close"]).reset_index(drop=True)
+
+    if history.empty:
+        return history
+
+    six_months_ago = (
+        history["published_date"].max() - pd.Timedelta(days=180)
+    )
+
+    return (
+        history[history["published_date"] >= six_months_ago]
+        .sort_values("published_date")
+        .reset_index(drop=True)
+    )
+
+
+def create_index_chart(history: pd.DataFrame, indicators=()):
+    """
+    Candlestick chart for the overall NEPSE index when open/high/low
+    are available, falling back to a close-price line chart. Adds a
+    turnover panel underneath when volume data is present.
+    """
+    if history.empty:
+        return None
+
+    has_ohlc = (
+        history[["open", "high", "low"]].notna().all().all()
+    )
+    has_volume = (
+        "volume" in history.columns and history["volume"].notna().any()
+    )
+
+    rows = 2 if has_volume else 1
+    row_heights = [0.7, 0.3] if has_volume else [1.0]
+
+    fig = make_subplots(
+        rows=rows,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.08,
+        row_heights=row_heights,
+    )
+
+    if has_ohlc:
+        fig.add_trace(
+            go.Candlestick(
+                x=history["published_date"],
+                open=history["open"],
+                high=history["high"],
+                low=history["low"],
+                close=history["close"],
+                name="NEPSE Index",
+            ),
+            row=1,
+            col=1,
+        )
+    else:
+        fig.add_trace(
+            go.Scatter(
+                x=history["published_date"],
+                y=history["close"],
+                mode="lines",
+                name="NEPSE Index",
+                line=dict(width=2, color="#2ec4b6"),
+            ),
+            row=1,
+            col=1,
+        )
+
+    if has_volume:
+        fig.add_trace(
+            go.Bar(
+                x=history["published_date"],
+                y=history["volume"],
+                name="Turnover",
+                marker=dict(color="lightblue"),
+                showlegend=False,
+            ),
+            row=2,
+            col=1,
+        )
+
+    close = history["close"]
+    if "SMA 20" in indicators:
+        fig.add_trace(
+            go.Scatter(
+                x=history["published_date"],
+                y=close.rolling(20).mean(),
+                name="SMA 20",
+                line=dict(color="#f4a261", width=2),
+            ),
+            row=1,
+            col=1,
+        )
+    if "SMA 50" in indicators:
+        fig.add_trace(
+            go.Scatter(
+                x=history["published_date"],
+                y=close.rolling(50).mean(),
+                name="SMA 50",
+                line=dict(color="#e76f51", width=2),
+            ),
+            row=1,
+            col=1,
+        )
+
+    if "RSI 14" in indicators:
+        delta = close.diff()
+        gain = delta.clip(lower=0).rolling(14).mean()
+        loss = (-delta.clip(upper=0)).rolling(14).mean()
+        rsi = 100 - (100 / (1 + gain / loss.replace(0, pd.NA)))
+        fig.add_trace(
+            go.Scatter(
+                x=history["published_date"], y=rsi, name="RSI 14",
+                line=dict(color="#2a9d8f", width=2),
+            ),
+            row=1,
+            col=1,
+        )
+    if "MACD" in indicators:
+        macd = close.ewm(span=12, adjust=False).mean() - close.ewm(
+            span=26, adjust=False
+        ).mean()
+        fig.add_trace(
+            go.Scatter(
+                x=history["published_date"], y=macd, name="MACD",
+                line=dict(color="#9b5de5", width=2),
+            ),
+            row=1,
+            col=1,
+        )
+
+    fig.update_yaxes(title_text="Index", row=1, col=1)
+    if has_volume:
+        fig.update_yaxes(title_text="Turnover", row=2, col=1)
+
+    fig.update_layout(
+        title=(
+            "NEPSE Index — 6 Month Trend"
+            if has_ohlc
+            else "NEPSE Index — 6 Month Trend (close only)"
+        ),
+        template="plotly_white",
+        height=560,
+        hovermode="x unified",
+        xaxis_rangeslider_visible=False,
+    )
+
+    return fig
+
+
+def build_index_proxy_history(
+    all_data: pd.DataFrame,
+    live_snapshot: dict | None = None,
+) -> pd.DataFrame:
+    """
+    Fallback market-trend series used when neither the live ShareSansar
+    scrape nor NEPSE_DAILY_SUMMARY.csv provide a real index-level OHLC
+    history. Built from data the app already has: a turnover-weighted
+    average of each day's per-stock % change, compounded into an
+    index-style level and anchored to today's live NEPSE index value
+    when known.
+
+    IMPORTANT: this is an approximation of overall market direction,
+    NOT a recomputation of the official market-cap-weighted NEPSE
+    Index — it exists purely so the chart always shows *something*
+    useful instead of a dead end.
+    """
+    if all_data.empty or "published_date" not in all_data.columns:
+        return pd.DataFrame()
+
+    change_col = next(
+        (
+            c
+            for c in ["return_percent", "per_change"]
+            if c in all_data.columns
+        ),
+        None,
+    )
+
+    if not change_col:
+        return pd.DataFrame()
+
+    df = all_data.dropna(subset=["published_date"]).copy()
+    df[change_col] = safe_numeric(df[change_col])
+    df = df.dropna(subset=[change_col])
+
+    if df.empty:
+        return pd.DataFrame()
+
+    weight_col = (
+        "traded_amount" if "traded_amount" in df.columns else None
+    )
+
+    def _daily_avg(day_df: pd.DataFrame) -> float:
+        if weight_col:
+            weights = safe_numeric(day_df[weight_col]).fillna(0)
+            if weights.sum() > 0:
+                return (day_df[change_col] * weights).sum() / weights.sum()
+        return day_df[change_col].mean()
+
+    daily = (
+        df.groupby("published_date")
+        .apply(_daily_avg)
+        .rename("avg_change_pct")
+        .reset_index()
+        .sort_values("published_date")
+    )
+
+    if daily.empty:
+        return pd.DataFrame()
+
+    six_months_ago = (
+        daily["published_date"].max() - pd.Timedelta(days=180)
+    )
+    daily = (
+        daily[daily["published_date"] >= six_months_ago]
+        .reset_index(drop=True)
+    )
+
+    if daily.empty:
+        return pd.DataFrame()
+
+    growth = (1 + daily["avg_change_pct"].fillna(0) / 100).cumprod()
+
+    anchor_value = (
+        live_snapshot.get("value")
+        if live_snapshot
+        else None
+    )
+
+    if isinstance(anchor_value, (int, float)) and growth.iloc[-1]:
+        level = growth * (anchor_value / growth.iloc[-1])
+    else:
+        level = growth * 100  # relative index, base 100
+
+    return pd.DataFrame(
+        {
+            "published_date": daily["published_date"],
+            "close": level,
+            "open": pd.NA,
+            "high": pd.NA,
+            "low": pd.NA,
+            "volume": pd.NA,
+        }
+    )
 
 
 POPULAR_STOCKS = [
@@ -1363,7 +2516,7 @@ if active_nav == "home":
 
     with _search_col:
 
-        home_symbol = st.text_input(
+        _search_raw = st.text_input(
 
             "Search",
 
@@ -1375,12 +2528,37 @@ if active_nav == "home":
             label_visibility="collapsed",
 
             key="home_search_input",
-        ).strip().upper()
+        )
+
+        home_symbol = _search_raw.strip().upper()
+
+
+    _stock_directory = build_stock_directory(
+        sector_mapping
+    )
+
+    if _search_raw.strip():
+
+        _search_matches = filter_stock_matches(
+            _search_raw,
+            _stock_directory,
+            limit=6,
+        )
+
+        st.markdown(
+            get_search_suggestions_html(
+                _search_matches,
+                len(_stock_directory),
+                active_theme,
+            ),
+            unsafe_allow_html=True,
+        )
 
 
     st.markdown(
         get_popular_tags_html(
-            POPULAR_STOCKS
+            POPULAR_STOCKS,
+            active_theme,
         ),
         unsafe_allow_html=True,
     )
@@ -1731,6 +2909,108 @@ if active_nav == "home":
 
 if active_nav == "stocks":
 
+    try:
+        stocks_index_snapshot = _call_with_backoff(
+            "load_live_nepse_index", load_live_nepse_index
+        )
+        st.caption("Live NEPSE index data · refreshed every 15 minutes")
+    except Exception as exc:
+        stocks_index_snapshot = get_nepse_index_snapshot(daily_summary)
+        st.caption("Live NEPSE index unavailable · showing saved summary data")
+        if DEBUG_MODE:
+            st.caption(f"Debug detail: {exc}")
+
+    st.markdown(
+        get_nepse_index_card_html(
+            stocks_index_snapshot,
+            get_market_breadth(all_data),
+            active_theme,
+        ),
+        unsafe_allow_html=True,
+    )
+
+    # Expand-icon on the index card links here with ?expand_index=1;
+    # pick that up once, then drop it from the URL immediately so the
+    # dialog is controlled by session_state (closable) rather than
+    # reopening on every rerun while the query param lingers.
+    if st.query_params.get("expand_index") == "1":
+
+        st.session_state["show_index_chart"] = True
+        del st.query_params["expand_index"]
+
+    if st.session_state.get("show_index_chart"):
+
+        @st.dialog("NEPSE Index — Detailed Chart")
+        def _show_index_chart_dialog():
+
+            _source_label = "Live ShareSansar NEPSE history"
+
+            try:
+                _index_history = _call_with_backoff(
+                    "load_live_nepse_index_history",
+                    load_live_nepse_index_history,
+                )
+            except Exception:
+                _index_history = pd.DataFrame()
+
+            if _index_history.empty:
+                _index_history = get_nepse_index_history(daily_summary)
+                _source_label = "Saved NEPSE_DAILY_SUMMARY.csv history"
+
+            if _index_history.empty:
+                _index_history = build_index_proxy_history(
+                    all_data,
+                    stocks_index_snapshot,
+                )
+                _source_label = (
+                    "Approximate market-trend proxy "
+                    "(turnover-weighted avg. of daily stock moves — "
+                    "not the official NEPSE Index calculation)"
+                )
+
+            st.caption(
+                f"{_source_label} · select indicators and zoom the chart."
+            )
+
+            selected_indicators = st.multiselect(
+                "Indicators",
+                ["SMA 20", "SMA 50", "RSI 14", "MACD"],
+                default=["SMA 20"],
+                key="nepse_index_indicators",
+            )
+            _index_fig = create_index_chart(
+                _index_history,
+                selected_indicators,
+            )
+
+            if _index_fig is None:
+                st.warning(
+                    "No index history is available yet — this needs "
+                    "either historical OHLC data in "
+                    "NEPSE_DAILY_SUMMARY.csv or per-stock data in "
+                    "NEPSE_ALL_DATA.csv to build even an approximate chart."
+                )
+            else:
+                st.plotly_chart(
+                    _index_fig,
+                    use_container_width=True,
+                    config={
+                        "displaylogo": False,
+                        "scrollZoom": True,
+                        "displayModeBar": True,
+                    },
+                )
+
+            if st.button(
+                "Close",
+                use_container_width=True,
+                key="close_index_chart_dialog",
+            ):
+                st.session_state["show_index_chart"] = False
+                st.rerun()
+
+        _show_index_chart_dialog()
+
     st.subheader(
         "Stock Symbol Analysis"
     )
@@ -2053,6 +3333,130 @@ if active_nav == "stocks":
 
 
 # ============================================================
+# TAB: MARKET MOVERS
+# ============================================================
+
+if active_nav == "movers":
+    st.subheader("Market Movers by Sector")
+    st.caption("Top 3 gainers, losers, and most active stocks within each sector on the latest trading day.")
+
+    latest_date = all_data["published_date"].max()
+    movers = all_data[
+        all_data["published_date"] == latest_date
+    ].copy()
+
+    # Attach sector information to each stock.
+    if not sector_mapping.empty and "sector" in sector_mapping.columns:
+        sector_symbol_col = next(
+            (
+                c for c in ["symbol", "Symbol", "SYMBOL"]
+                if c in sector_mapping.columns
+            ),
+            None,
+        )
+
+        if sector_symbol_col:
+            sector_map = sector_mapping[
+                [sector_symbol_col, "sector"]
+            ].copy()
+            sector_map.columns = ["symbol", "sector"]
+            sector_map["symbol"] = (
+                sector_map["symbol"].astype(str).str.strip().str.upper()
+            )
+            movers = movers.merge(
+                sector_map.drop_duplicates("symbol"),
+                on="symbol",
+                how="left",
+            )
+
+    if "sector" not in movers.columns:
+        movers["sector"] = "Other"
+
+    movers["sector"] = movers["sector"].fillna("Other")
+
+    change_col = (
+        "return_percent"
+        if "return_percent" in movers.columns
+        else "per_change"
+    )
+
+    if change_col not in movers.columns:
+        st.warning("Market movement data is unavailable.")
+    else:
+        movers[change_col] = safe_numeric(movers[change_col])
+
+        for sector_name in sorted(movers["sector"].dropna().unique()):
+            sector_df = movers[movers["sector"] == sector_name].copy()
+
+            st.markdown(f"### {sector_name}")
+
+            gainers = (
+                sector_df[sector_df[change_col] > 0]
+                .sort_values(change_col, ascending=False)
+                .head(3)
+            )
+            losers = (
+                sector_df[sector_df[change_col] < 0]
+                .sort_values(change_col, ascending=True)
+                .head(3)
+            )
+            most_active = (
+                sector_df.sort_values(
+                    "traded_quantity",
+                    ascending=False,
+                ).head(3)
+                if "traded_quantity" in sector_df.columns
+                else sector_df.head(3)
+            )
+
+            c1, c2, c3 = st.columns(3)
+
+            with c1:
+                st.markdown("**🟢 Top 3 Gainers**")
+                if gainers.empty:
+                    st.info("No gainers")
+                else:
+                    display = gainers[["symbol", change_col]].copy()
+                    display.columns = ["Stock", "Change %"]
+                    display["Change %"] = display["Change %"].map(
+                        lambda x: f"+{x:.2f}%"
+                    )
+                    st.dataframe(display, use_container_width=True, hide_index=True)
+
+            with c2:
+                st.markdown("**🔴 Top 3 Losers**")
+                if losers.empty:
+                    st.info("No losers")
+                else:
+                    display = losers[["symbol", change_col]].copy()
+                    display.columns = ["Stock", "Change %"]
+                    display["Change %"] = display["Change %"].map(
+                        lambda x: f"{x:.2f}%"
+                    )
+                    st.dataframe(display, use_container_width=True, hide_index=True)
+
+            with c3:
+                st.markdown("**🔵 Top 3 Most Active**")
+                if most_active.empty:
+                    st.info("No active stocks")
+                else:
+                    active_cols = ["symbol"]
+                    if "traded_quantity" in most_active.columns:
+                        active_cols.append("traded_quantity")
+                    if "traded_amount" in most_active.columns:
+                        active_cols.append("traded_amount")
+                    display = most_active[active_cols].copy()
+                    display.columns = [
+                        "Stock",
+                        *(["Volume"] if "traded_quantity" in most_active.columns else []),
+                        *(["Turnover"] if "traded_amount" in most_active.columns else []),
+                    ]
+                    st.dataframe(display, use_container_width=True, hide_index=True)
+
+            st.divider()
+
+
+# ============================================================
 # TAB: COMPANY ANALYSIS
 # ============================================================
 
@@ -2293,7 +3697,7 @@ if active_nav == "company":
         # ====================================================
 
         st.markdown(
-            "## 📊 Financial Fundamentals"
+            "## ▶ Financial Fundamentals"
         )
 
 
@@ -2405,6 +3809,30 @@ if active_nav == "company":
                         latest_report,
                         "paid_up_capital",
                     )
+                )
+
+                roe = get_ratio_value(
+                    latest_report,
+                    financial_data,
+                    selected_symbol,
+                    ("roe", "roe_ttm", "return_on_equity", "ROE TTM"),
+                )
+                roa = get_ratio_value(
+                    latest_report,
+                    financial_data,
+                    selected_symbol,
+                    ("roa", "roa_ttm", "return_on_assets", "ROA TTM"),
+                )
+                net_margin = get_ratio_value(
+                    latest_report,
+                    financial_data,
+                    selected_symbol,
+                    (
+                        "net_margin",
+                        "net_margin_ttm",
+                        "net profit margin",
+                        "Net Margin TTM",
+                    ),
                 )
 
 
@@ -2582,39 +4010,70 @@ if active_nav == "company":
                 )
 
 
-                # The current API response does not
-                # directly provide enough information
-                # to calculate these safely.
-
                 r1.metric(
                     "ROE",
-                    "N/A",
+                    f"{roe:.2f}%" if roe is not None else "N/A",
                 )
 
 
                 r2.metric(
                     "ROA",
-                    "N/A",
+                    f"{roa:.2f}%" if roa is not None else "N/A",
                 )
 
 
                 r3.metric(
                     "Net Margin",
-                    "N/A",
-                )
-
-
-                st.caption(
-                    "ROE, ROA and Net Margin are "
-                    "shown as N/A until the API "
-                    "provides the required "
-                    "financial statement fields."
+                    f"{net_margin:.2f}%" if net_margin is not None else "N/A",
                 )
 
 
                 # =================================================
-                # RAW FINANCIAL REPORT
+                # AI RECOMMENDATION
                 # =================================================
+                # Placed here rather than in the stock list/table or as
+                # its own nav tab: it needs P/E, P/B, EPS, ROE and net
+                # margin, all of which only exist once this fundamentals
+                # section has been loaded for a specific symbol. Putting
+                # it in a table column would mean recomputing this per
+                # row with no room to show the "why"; putting it in its
+                # own tab would separate the verdict from the numbers
+                # that justify it.
+
+                st.markdown(
+                    "### 🤖 AI Recommendation"
+                )
+
+                ai_verdict, ai_summary, ai_reasons = (
+                    generate_ai_recommendation(
+                        eps=eps,
+                        pe=pe,
+                        pb=pb,
+                        roe=roe,
+                        roa=roa,
+                        net_margin=net_margin,
+                        symbol=selected_symbol,
+                    )
+                )
+
+                st.markdown(
+                    get_ai_recommendation_card_html(
+                        ai_verdict,
+                        ai_summary,
+                        ai_reasons,
+                        active_theme,
+                    ),
+                    unsafe_allow_html=True,
+                )
+
+
+                # =================================================
+                # FULL FINANCIAL REPORT (human-readable)
+                # =================================================
+                # FIX #3: Replaced raw st.json(latest_report) dump
+                # with a clean, formatted table. A collapsed,
+                # clearly labeled "raw data" expander is kept for
+                # advanced users who explicitly want it.
 
                 with st.expander(
                     f"📋 View Complete "
@@ -2622,13 +4081,14 @@ if active_nav == "company":
                     f"Financial Report"
                 ):
 
-                    st.json(
-                        latest_report
+                    render_financial_report_readable(
+                        latest_report,
+                        title=f"{selected_symbol} — Latest Report Summary",
                     )
 
 
                 # =================================================
-                # ALL AVAILABLE REPORTS
+                # ALL AVAILABLE REPORTS (human-readable)
                 # =================================================
 
                 all_reports = (
@@ -2671,8 +4131,9 @@ if active_nav == "company":
                                 f"| FY {report_fy}"
                             )
 
-                            st.json(
-                                report
+                            render_financial_report_readable(
+                                report,
+                                title=f"Report {i + 1} Summary",
                             )
 
                             st.divider()

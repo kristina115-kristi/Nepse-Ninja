@@ -653,6 +653,74 @@ def build_combined_outputs(per_symbol_dir: Path, output_dir: Path) -> tuple[int,
     return len(combined_wide), len(combined_long)
 
 
+def build_ratio_output(per_symbol_dir: Path, output_dir: Path) -> int:
+    """Calculate ROE, ROA, and net margin from the latest scraped period."""
+    files = sorted(per_symbol_dir.glob("*_table_*.csv"))
+    records: list[dict[str, object]] = []
+
+    metric_patterns = {
+        "net_profit": re.compile(r"net profit|net income|profit after tax", re.I),
+        "equity": re.compile(r"total equity|shareholders.? equity|net worth", re.I),
+        "assets": re.compile(r"total assets", re.I),
+        "revenue": re.compile(r"revenue|sales income|operating income", re.I),
+    }
+
+    for path in files:
+        frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+        long_frame = wide_to_long(frame)
+        if long_frame.empty:
+            continue
+
+        symbol = str(frame["symbol"].iloc[0]).strip().upper()
+        latest: dict[str, float] = {}
+        for metric_name, pattern in metric_patterns.items():
+            matches = long_frame[
+                long_frame["particular"].astype(str).str.contains(pattern, na=False)
+            ].copy()
+            if matches.empty:
+                continue
+            matches["value_numeric"] = pd.to_numeric(
+                matches["value_numeric"], errors="coerce"
+            )
+            matches = matches.dropna(subset=["value_numeric"])
+            if not matches.empty:
+                latest[metric_name] = float(matches.iloc[-1]["value_numeric"])
+
+        if not latest.get("net_profit"):
+            continue
+
+        ratios = {
+            "ROE TTM": (
+                latest["net_profit"] / latest["equity"] * 100
+                if latest.get("equity")
+                else None
+            ),
+            "ROA TTM": (
+                latest["net_profit"] / latest["assets"] * 100
+                if latest.get("assets")
+                else None
+            ),
+            "Net Margin TTM": (
+                latest["net_profit"] / latest["revenue"] * 100
+                if latest.get("revenue")
+                else None
+            ),
+        }
+        for particular, value in ratios.items():
+            if value is not None and pd.notna(value):
+                records.append(
+                    {"symbol": symbol, "Particular": particular, "Latest": value}
+                )
+
+    output = pd.DataFrame(records, columns=["symbol", "Particular", "Latest"])
+    ratio_path = output_dir / "nepsealpha_ratios.csv"
+    if not output.empty:
+        output.to_csv(ratio_path, index=False, encoding="utf-8-sig")
+    elif not ratio_path.exists():
+        output.to_csv(ratio_path, index=False, encoding="utf-8-sig")
+    return output["symbol"].nunique() if not output.empty else 0
+
+
 def load_status(path: Path) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame(columns=["symbol", "status", "tables", "rows", "message", "updated_at_utc"])
@@ -722,7 +790,11 @@ def main() -> None:
 
     if not pending:
         wide_rows, long_rows = build_combined_outputs(per_symbol_dir, args.output_dir)
-        print(f"Nothing to scrape. Combined outputs contain {wide_rows} wide and {long_rows} long rows.")
+        ratio_symbols = build_ratio_output(per_symbol_dir, args.output_dir)
+        print(
+            f"Nothing to scrape. Combined outputs contain {wide_rows} wide and "
+            f"{long_rows} long rows; ratios cover {ratio_symbols} symbols."
+        )
         return
 
     driver = make_driver(args.headless, args.profile_dir)
@@ -807,9 +879,11 @@ def main() -> None:
         driver.quit()
 
     wide_rows, long_rows = build_combined_outputs(per_symbol_dir, args.output_dir)
+    ratio_symbols = build_ratio_output(per_symbol_dir, args.output_dir)
     print("\nFinished building outputs:")
     print(f" {args.output_dir / 'nepsealpha_financials_wide.csv'} ({wide_rows} rows)")
     print(f" {args.output_dir / 'nepsealpha_financials_long.csv'} ({long_rows} rows)")
+    print(f" {args.output_dir / 'nepsealpha_ratios.csv'} ({ratio_symbols} symbols)")
     print(f" {status_path}")
     if security_blocked:
         print("Rerun without --headless; completed symbols will be skipped automatically.")
