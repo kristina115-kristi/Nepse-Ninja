@@ -1,6 +1,6 @@
 ﻿symbol,status,tables,rows,message,updated_at_utc
 ACLBSL,no_financial_table,0,0,No qualifying financial table appeared within 25s.,2026-08-26T01:49:35.291074+00:00
-ADBL,blocked,0,0,NEPSEAlpha's browser-security verification did not clear in time. The saved progress is safe; rerun later to resume.,2026-09-05T16:14:01.577548+00:00
+ADBL,blocked,0,0,NEPSEAlpha's browser-security verification did not clear in time. The saved progress is safe; rerun later to resume.,2026-09-09T15:46:06.902589+00:00
 ADBLD83,failed,0,0,"NoSuchWindowException: Message: no such window: target window already closed
 from unknown error: web view not found
   (Session info: chrome=152.0.7977.66)
